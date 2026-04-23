@@ -32,3 +32,8 @@ Out of scope (punt to JARVIS): personal life, social stuff, anything clearly non
 ## Integrations
 
 Add MCP integrations on demand, not preemptively. Available but dormant: Gmail, Google Calendar, Google Drive, Notion.
+
+## Active Systems
+
+- **Friday v1 Project Intelligence** lives in this workspace. It checks Notion Session Debriefs, uses Granite for routing, GPT-5.4 for executive review, writes Friday comments/statuses back to Notion, and sends Telegram only when attention is needed.
+- **Codex global session skills** now exist for `start-session` and `end-session`. They are adapted from Amit's Claude Code workflows and live under `C:\Users\Amit\.codex\skills`.

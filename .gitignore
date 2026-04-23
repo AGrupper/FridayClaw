@@ -1,0 +1,8 @@
+.openclaw/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+*credentials*
+*.key
+*.pem

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "name": "Jarvis",
+      "aliases": [
+        "Jarvis 1.0",
+        "Jarvis1.0"
+      ],
+      "repo_url": "https://github.com/AGrupper/Jarvis1.0",
+      "local_repo_path": ""
+    }
+  ]
+}

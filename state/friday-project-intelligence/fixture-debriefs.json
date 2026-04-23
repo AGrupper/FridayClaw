@@ -1,0 +1,52 @@
+{
+  "debriefs": [
+    {
+      "id": "fixture-clear-repo",
+      "title": "Sleep.io session",
+      "review_status": "New",
+      "project_name": "Sleep.io",
+      "repo_url": "https://github.com/AGrupper/sleep.io",
+      "local_repo_path": "",
+      "session_summary": "Fixed auth redirects and left payment settings unresolved.",
+      "open_items": "Payment settings still need an end-to-end verification path.",
+      "next_steps": "Check payment settings before building more billing UI.",
+      "content": "Session debrief for Project: Sleep.io. Repo: https://github.com/AGrupper/sleep.io. Today I fixed auth redirects and left payment settings unresolved."
+    },
+    {
+      "id": "fixture-reviewed",
+      "title": "Already reviewed session",
+      "review_status": "Reviewed",
+      "project_name": "Sleep.io",
+      "repo_url": "https://github.com/AGrupper/sleep.io",
+      "local_repo_path": "",
+      "session_summary": "Already handled.",
+      "open_items": "",
+      "next_steps": "",
+      "content": "This page should be skipped because it is already reviewed."
+    },
+    {
+      "id": "fixture-completed",
+      "title": "Historical completed session",
+      "review_status": "completed",
+      "project_name": "OpenClaw",
+      "repo_url": "",
+      "local_repo_path": "",
+      "session_summary": "Historical session already completed.",
+      "open_items": "",
+      "next_steps": "",
+      "content": "This historical debrief should be treated as already handled."
+    },
+    {
+      "id": "fixture-missing-mapping",
+      "title": "School Helper App session",
+      "review_status": "",
+      "project_name": "School Helper App",
+      "repo_url": "",
+      "local_repo_path": "",
+      "session_summary": "Fixed some UI bugs in the school helper app.",
+      "open_items": "Repo is not linked.",
+      "next_steps": "Continue UI cleanup.",
+      "content": "Worked a bit on the school helper app today. Fixed some UI bugs. Not sure which repository this belongs to."
+    }
+  ]
+}
