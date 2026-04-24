@@ -38,9 +38,36 @@ NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2026-03-11"
 DEFAULT_NOTION_DATA_SOURCE_ID = "33834a33-2bc2-80f5-9dd1-000bf76a48fa"
 DEFAULT_NOTION_STATUS_PROPERTY = "Status"
-DEFAULT_ROUTER_MODEL = "ollama/granite3.3:2b"
+DEFAULT_ROUTER_MODEL = "ollama/falcon3:3b"
 DEFAULT_WORKER_MODEL = "minimax/MiniMax-M2.7"
 DEFAULT_EXECUTIVE_MODEL = "openai-codex/gpt-5.4"
+COMMON_OLLAMA_PATHS = [
+    Path(r"C:\Users\Amit\AppData\Local\Programs\Ollama\ollama.exe"),
+    Path(r"C:\Program Files\Ollama\ollama.exe"),
+]
+OLLAMA_API_GENERATE = "http://127.0.0.1:11434/api/generate"
+OLLAMA_ROUTE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "project_name": {"type": ["string", "null"]},
+        "repo_url": {"type": ["string", "null"]},
+        "repo_hint": {"type": ["string", "null"]},
+        "review_status": {"type": ["string", "null"]},
+        "has_enough_context": {"type": "boolean"},
+        "should_launch_review": {"type": "boolean"},
+        "reason": {"type": ["string", "null"]},
+    },
+    "required": [
+        "project_name",
+        "repo_url",
+        "repo_hint",
+        "review_status",
+        "has_enough_context",
+        "should_launch_review",
+        "reason",
+    ],
+    "additionalProperties": False,
+}
 
 HANDLED_STATUSES = {
     "completed",
@@ -605,61 +632,121 @@ def infer_project_name(debrief: Debrief) -> str:
     return debrief.title.replace(" session", "").strip()
 
 
-def granite_route(debrief: Debrief, project_map: dict[str, Any]) -> dict[str, Any]:
-    """Route with Granite. Fall back to deterministic routing if JSON is invalid."""
+def discover_ollama_command() -> list[str]:
+    found = shutil.which("ollama")
+    if found:
+        return [found]
+    for candidate in COMMON_OLLAMA_PATHS:
+        if candidate.exists():
+            return [str(candidate)]
+    raise RuntimeError("Ollama CLI was not found in PATH or common install locations.")
+
+
+def normalize_ollama_model_tag(model_tag: str) -> str:
+    tag = str(model_tag or "").strip()
+    if tag.startswith("ollama/"):
+        return tag.split("/", 1)[1]
+    return tag or "falcon3:3b"
+
+
+def ollama_generate_json(model_tag: str, prompt: str, *, timeout_seconds: int) -> dict[str, Any]:
+    payload = json.dumps(
+        {
+            "model": normalize_ollama_model_tag(model_tag),
+            "prompt": prompt,
+            "stream": False,
+            "format": OLLAMA_ROUTE_SCHEMA,
+            "options": {
+                "temperature": 0,
+            },
+        }
+    ).encode("utf-8")
+    request = Request(
+        OLLAMA_API_GENERATE,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Friday-Project-Intelligence/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(detail or str(exc)) from exc
+    payload_json = json.loads(body)
+    if "error" in payload_json:
+        raise RuntimeError(str(payload_json["error"]))
+    return json.loads(extract_json_object(str(payload_json.get("response", ""))))
+
+
+def build_router_prompt(debrief: Debrief) -> str:
     prompt_template = PROMPT_PATH.read_text(encoding="utf-8")
     prompt = prompt_template.replace("{{REVIEW_STATUS}}", debrief.review_status or "New")
-    prompt = prompt.replace("{{DEBRIEF_TEXT}}", debrief.content)
+    return prompt.replace("{{DEBRIEF_TEXT}}", debrief.content)
 
-    try:
-        completed = subprocess.run(
-            ["ollama", "run", "granite3.3:2b", prompt],
-            cwd=str(ROOT),
-            check=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=120,
-        )
-        raw = extract_json_object(completed.stdout)
-        data = json.loads(raw)
-        # Merge deterministic repo mapping so the model cannot invent missing state.
-        deterministic = deterministic_route(debrief, project_map)
-        data["project_name"] = deterministic["project_name"] or clean_model_text(data.get("project_name"))
-        data["review_status"] = deterministic["review_status"]
-        data["repo_url"] = clean_model_text(data.get("repo_url"))
-        data["repo_hint"] = clean_model_text(data.get("repo_hint"))
-        data["has_enough_context"] = model_bool(data.get("has_enough_context"))
-        data["should_launch_review"] = model_bool(data.get("should_launch_review"))
-        if deterministic["repo_url"]:
-            data["repo_url"] = deterministic["repo_url"]
-        if deterministic["repo_hint"]:
-            data["repo_hint"] = deterministic["repo_hint"]
-        if not deterministic["has_enough_context"]:
-            data["has_enough_context"] = False
-            data["should_launch_review"] = False
-            data["repo_url"] = deterministic["repo_url"]
-            data["repo_hint"] = deterministic["repo_hint"]
+
+def merge_model_route(debrief: Debrief, project_map: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    deterministic = deterministic_route(debrief, project_map)
+    data["project_name"] = deterministic["project_name"] or clean_model_text(data.get("project_name"))
+    data["review_status"] = deterministic["review_status"]
+    data["repo_url"] = clean_model_text(data.get("repo_url"))
+    data["repo_hint"] = clean_model_text(data.get("repo_hint"))
+    data["has_enough_context"] = model_bool(data.get("has_enough_context"))
+    data["should_launch_review"] = model_bool(data.get("should_launch_review"))
+    if deterministic["repo_url"]:
+        data["repo_url"] = deterministic["repo_url"]
+    if deterministic["repo_hint"]:
+        data["repo_hint"] = deterministic["repo_hint"]
+    if not deterministic["has_enough_context"]:
+        data["has_enough_context"] = False
+        data["should_launch_review"] = False
+        data["repo_url"] = deterministic["repo_url"]
+        data["repo_hint"] = deterministic["repo_hint"]
+        data["reason"] = deterministic["reason"]
+    elif deterministic["has_enough_context"]:
+        data["has_enough_context"] = True
+        data["should_launch_review"] = True
+        if not clean_model_text(data.get("reason")):
             data["reason"] = deterministic["reason"]
-        elif deterministic["has_enough_context"]:
-            data["has_enough_context"] = True
-            data["should_launch_review"] = True
-            if not clean_model_text(data.get("reason")):
-                data["reason"] = deterministic["reason"]
-        return data
+    return data
+
+
+def ollama_route(
+    debrief: Debrief,
+    project_map: dict[str, Any],
+    *,
+    model_tag: str,
+    timeout_seconds: int = 120,
+) -> dict[str, Any]:
+    try:
+        prompt = build_router_prompt(debrief)
+        data = ollama_generate_json(model_tag, prompt, timeout_seconds=timeout_seconds)
+        return merge_model_route(debrief, project_map, data)
     except Exception as exc:  # noqa: BLE001 - fallback is intentional and reported.
         route = deterministic_route(debrief, project_map)
-        route["reason"] = f"Granite routing fallback used: {exc}"
+        route["reason"] = f"{normalize_ollama_model_tag(model_tag)} routing fallback used: {exc}"
         return route
+
+
+def configured_local_router_route(
+    debrief: Debrief,
+    project_map: dict[str, Any],
+    *,
+    model_tag: str,
+) -> dict[str, Any]:
+    """Route with the configured local Ollama router and deterministic guardrails."""
+    return ollama_route(debrief, project_map, model_tag=model_tag, timeout_seconds=120)
 
 
 def extract_json_object(text: str) -> str:
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1 or end < start:
-        raise ValueError("No JSON object found in Granite output")
+        raise ValueError("No JSON object found in router output")
     return text[start : end + 1]
 
 
@@ -1024,14 +1111,32 @@ def send_openclaw_telegram(message: str, reply_to: str) -> dict[str, Any]:
         return {"raw": completed.stdout.strip()}
 
 
-def selected_route(debrief: Debrief, project_map: dict[str, Any], *, use_granite: bool) -> dict[str, Any]:
+def selected_route(
+    debrief: Debrief,
+    project_map: dict[str, Any],
+    *,
+    use_local_router: bool,
+    ollama_model: str | None = None,
+) -> dict[str, Any]:
     status = normalize_status(debrief.review_status)
     if status in HANDLED_STATUSES:
         return deterministic_route(debrief, project_map)
-    return granite_route(debrief, project_map) if use_granite else deterministic_route(debrief, project_map)
+    if not use_local_router:
+        return deterministic_route(debrief, project_map)
+    return configured_local_router_route(
+        debrief,
+        project_map,
+        model_tag=normalize_ollama_model_tag(ollama_model or DEFAULT_ROUTER_MODEL),
+    )
 
 
-def process_debriefs(debriefs: list[Debrief], *, use_granite: bool, dry_run: bool) -> dict[str, Any]:
+def process_debriefs(
+    debriefs: list[Debrief],
+    *,
+    use_local_router: bool,
+    dry_run: bool,
+    ollama_model: str | None = None,
+) -> dict[str, Any]:
     project_map = load_project_map()
     config = load_runtime_config()
     models = config["models"]
@@ -1040,7 +1145,12 @@ def process_debriefs(debriefs: list[Debrief], *, use_granite: bool, dry_run: boo
 
     for debrief in debriefs:
         status = normalize_status(debrief.review_status)
-        route = selected_route(debrief, project_map, use_granite=use_granite)
+        route = selected_route(
+            debrief,
+            project_map,
+            use_local_router=use_local_router,
+            ollama_model=ollama_model or models.get("router_model"),
+        )
 
         item: dict[str, Any] = {
             "id": debrief.id,
@@ -1105,7 +1215,7 @@ def process_debriefs(debriefs: list[Debrief], *, use_granite: bool, dry_run: boo
 
     return {
         "dry_run": dry_run,
-        "use_granite": use_granite,
+        "use_local_router": use_local_router,
         "models": models,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "results": results,
@@ -1119,11 +1229,22 @@ def load_notion_page_debrief(page_id: str) -> Debrief:
     return notion_page_to_debrief(page, status_property=status_property)
 
 
-def build_page_preview(debrief: Debrief, *, use_granite: bool, telegram_reply_to: str = "") -> dict[str, Any]:
+def build_page_preview(
+    debrief: Debrief,
+    *,
+    use_local_router: bool,
+    telegram_reply_to: str = "",
+    ollama_model: str | None = None,
+) -> dict[str, Any]:
     config = load_runtime_config()
     project_map = load_project_map()
     status = normalize_status(debrief.review_status)
-    route = selected_route(debrief, project_map, use_granite=use_granite)
+    route = selected_route(
+        debrief,
+        project_map,
+        use_local_router=use_local_router,
+        ollama_model=ollama_model or config["models"].get("router_model"),
+    )
     repo_context = inspect_repo_context(route, fetch_remote=True) if route.get("should_launch_review") else {}
     telegram_target = telegram_reply_to or str(config["telegram"].get("reply_to", "")).strip()
 
@@ -1178,9 +1299,20 @@ def build_page_preview(debrief: Debrief, *, use_granite: bool, telegram_reply_to
     return preview
 
 
-def apply_page(page_id: str, *, use_granite: bool, telegram_reply_to: str = "") -> dict[str, Any]:
+def apply_page(
+    page_id: str,
+    *,
+    use_local_router: bool,
+    telegram_reply_to: str = "",
+    ollama_model: str | None = None,
+) -> dict[str, Any]:
     debrief = load_notion_page_debrief(page_id)
-    preview = build_page_preview(debrief, use_granite=use_granite, telegram_reply_to=telegram_reply_to)
+    preview = build_page_preview(
+        debrief,
+        use_local_router=use_local_router,
+        telegram_reply_to=telegram_reply_to,
+        ollama_model=ollama_model,
+    )
     if preview["planned_actions"] and preview["planned_actions"][0]["type"] == "skip":
         return {"applied": False, "preview": preview, "reason": "Page is already handled."}
 
@@ -1236,7 +1368,7 @@ def mark_review_failed(page_id: str, message: str) -> dict[str, Any]:
     }
 
 
-def auto_run(*, use_granite: bool, limit: int = 10) -> dict[str, Any]:
+def auto_run(*, use_local_router: bool, limit: int = 10, ollama_model: str | None = None) -> dict[str, Any]:
     state = load_processed_state()
     processed_ids = state_id_set(state.get("processedDebriefs", []))
     unresolved_ids = state_id_set(state.get("unresolvedMappings", []))
@@ -1268,7 +1400,12 @@ def auto_run(*, use_granite: bool, limit: int = 10) -> dict[str, Any]:
             results.append(item)
             continue
 
-        route = selected_route(debrief, project_map, use_granite=use_granite)
+        route = selected_route(
+            debrief,
+            project_map,
+            use_local_router=use_local_router,
+            ollama_model=ollama_model or config["models"].get("router_model"),
+        )
         item["route"] = route
 
         if not route.get("should_launch_review"):
@@ -1277,7 +1414,7 @@ def auto_run(*, use_granite: bool, limit: int = 10) -> dict[str, Any]:
                 results.append(item)
                 continue
             try:
-                preview = build_page_preview(debrief, use_granite=use_granite)
+                preview = build_page_preview(debrief, use_local_router=use_local_router, ollama_model=ollama_model)
                 next_status = str(preview.get("next_status") or "Needs Repo Mapping")
                 comment = str(preview.get("notion_comment") or draft_missing_mapping_comment(debrief, route))
                 telegram = str(preview.get("telegram_message") or draft_telegram_missing_mapping(debrief, route))
@@ -1308,7 +1445,7 @@ def auto_run(*, use_granite: bool, limit: int = 10) -> dict[str, Any]:
             continue
 
         try:
-            applied = apply_page(debrief.id, use_granite=use_granite)
+            applied = apply_page(debrief.id, use_local_router=use_local_router, ollama_model=ollama_model)
             status_after = str(applied.get("status") or "")
             telegram_sent = bool(applied.get("telegram_sent"))
             outcome = "reviewed" if status_after == "Reviewed" else normalize_status(status_after).replace(" ", "_")
@@ -1328,16 +1465,21 @@ def auto_run(*, use_granite: bool, limit: int = 10) -> dict[str, Any]:
     save_json(PROCESSED_PATH, state)
     return {
         "auto_run": True,
-        "use_granite": use_granite,
+        "use_local_router": use_local_router,
         "limit": limit,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "results": results,
     }
 
 
-def run_fixture_tests(use_granite: bool = False) -> int:
+def run_fixture_tests(use_local_router: bool = False, ollama_model: str | None = None) -> int:
     debriefs = load_fixture_debriefs()
-    result = process_debriefs(debriefs, use_granite=use_granite, dry_run=True)
+    result = process_debriefs(
+        debriefs,
+        use_local_router=use_local_router,
+        dry_run=True,
+        ollama_model=ollama_model,
+    )
     by_id = {item["id"]: item for item in result["results"]}
 
     assertions = [
@@ -1383,7 +1525,14 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Friday project intelligence dry-run watcher")
     parser.add_argument("--fixtures", action="store_true", help="Process local fake debrief fixtures")
     parser.add_argument("--test", action="store_true", help="Run fixture assertions")
-    parser.add_argument("--use-granite", action="store_true", help="Use Ollama granite3.3:2b for routing")
+    parser.add_argument(
+        "--use-local-router",
+        "--use-granite",
+        dest="use_local_router",
+        action="store_true",
+        help="Use the configured local Ollama router instead of deterministic routing. --use-granite remains as a deprecated alias.",
+    )
+    parser.add_argument("--ollama-model", help="Override the local Ollama router tag (for example falcon3:3b)")
     parser.add_argument("--discover-notion", action="store_true", help="Read-only discovery for the session debriefs Notion source")
     parser.add_argument("--notion-dry-run", action="store_true", help="Preview planned actions for recent Notion debriefs")
     parser.add_argument("--notion-limit", type=int, default=5, help="Recent Notion debrief rows to fetch during discovery")
@@ -1400,7 +1549,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     if args.test:
-        return run_fixture_tests(use_granite=args.use_granite)
+        return run_fixture_tests(use_local_router=args.use_local_router, ollama_model=args.ollama_model)
 
     if args.discover_notion:
         result = discover_notion_session_debriefs(limit=args.notion_limit)
@@ -1409,28 +1558,48 @@ def main(argv: list[str]) -> int:
 
     if args.notion_dry_run:
         debriefs = load_notion_debriefs(limit=args.notion_limit)
-        result = process_debriefs(debriefs, use_granite=args.use_granite, dry_run=True)
+        result = process_debriefs(
+            debriefs,
+            use_local_router=args.use_local_router,
+            dry_run=True,
+            ollama_model=args.ollama_model,
+        )
         print(json.dumps(result, indent=2))
         return 0
 
     if args.auto_run:
-        result = auto_run(use_granite=args.use_granite, limit=args.auto_limit)
+        result = auto_run(use_local_router=args.use_local_router, limit=args.auto_limit, ollama_model=args.ollama_model)
         print(json.dumps(result, indent=2))
         return 0
 
     if args.preview_page:
         debrief = load_notion_page_debrief(args.preview_page)
-        result = build_page_preview(debrief, use_granite=args.use_granite, telegram_reply_to=args.telegram_reply_to or "")
+        result = build_page_preview(
+            debrief,
+            use_local_router=args.use_local_router,
+            telegram_reply_to=args.telegram_reply_to or "",
+            ollama_model=args.ollama_model,
+        )
         print(json.dumps(result, indent=2))
         return 0
 
     if args.apply_page:
-        result = apply_page(args.apply_page, use_granite=args.use_granite, telegram_reply_to=args.telegram_reply_to or "")
+        result = apply_page(
+            args.apply_page,
+            use_local_router=args.use_local_router,
+            telegram_reply_to=args.telegram_reply_to or "",
+            ollama_model=args.ollama_model,
+        )
         print(json.dumps(result, indent=2))
         return 0
 
     if args.fixtures:
-        result = process_debriefs(load_fixture_debriefs(), use_granite=args.use_granite, dry_run=True)
+        result = process_debriefs(
+            load_fixture_debriefs(),
+            use_local_router=args.use_local_router,
+            dry_run=True,
+            ollama_model=args.ollama_model,
+        )
         print(json.dumps(result, indent=2))
         return 0
 

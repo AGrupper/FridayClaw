@@ -1,6 +1,6 @@
 # Friday Watcher Routing Prompt
 
-Use this prompt when testing Ollama `granite3.3:2b` as Friday's local watcher/router.
+Use this prompt when testing Friday's configured local Ollama router. The current production router is `falcon3:3b`.
 
 ```text
 You are Friday's watcher/router. Your job is only to route a session debrief.

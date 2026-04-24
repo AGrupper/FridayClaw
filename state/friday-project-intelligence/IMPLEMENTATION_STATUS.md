@@ -2,7 +2,9 @@
 
 ## Completed
 
-- Installed and verified Ollama `granite3.3:2b`.
+- Installed and verified the current local production models:
+  - `qwen3:1.7b` for the OpenClaw cron wrapper
+  - `falcon3:3b` for the internal Friday router
 - Confirmed `NOTION_API_KEY` is present in the Windows User environment, though not inherited by the already-running OpenClaw agent process.
 - Created lightweight local state files:
   - `processed-debriefs.json`
@@ -15,7 +17,7 @@
   - missing repo mapping
   - one-time Telegram draft for missing mapping
   - executive review prompt packaging for safe candidates
-- Added safety override so Granite cannot invent repo URLs for missing mappings.
+- Added safety override so the local router cannot invent repo URLs for missing mappings.
 - Confirmed OpenClaw Telegram is enabled and the CLI supports Telegram delivery with:
   - `openclaw agent --message "<message>" --deliver --reply-channel telegram --reply-to <target>`
 - Confirmed OpenClaw `main` is configured on `openai-codex/gpt-5.4`.
@@ -35,8 +37,8 @@
   - `CLAUDE.md`, `AGENTS.md`, and `README.md` when available
 - Added a local Jarvis project mapping:
   - `Jarvis` -> `https://github.com/AGrupper/Jarvis1.0`
-- Hardened Granite routing so placeholder values like `NOT PROVIDED` cannot override deterministic project mappings.
-- Normalized Granite boolean strings before routing decisions.
+- Hardened local routing so placeholder values like `NOT PROVIDED` cannot override deterministic project mappings.
+- Normalized local-router boolean strings before routing decisions.
 - Changed useful-review Telegram behavior:
   - full GPT-5.4 suggestion stays in the Notion comment
   - Telegram sends only a short pointer with project/session context
@@ -96,7 +98,8 @@ Because Notion is the source of truth for v1, unattended live writes should stay
 
 ## Model Roles
 
-- Router: `ollama/granite3.3:2b`
+- OpenClaw cron wrapper: `ollama/qwen3:1.7b`
+- Router: `ollama/falcon3:3b`
 - Middle worker: `minimax/MiniMax-M2.7`
 - Executive/Friday voice: `openai-codex/gpt-5.4`
 
@@ -104,13 +107,13 @@ Because Notion is the source of truth for v1, unattended live writes should stay
 
 ```powershell
 python scripts\friday_project_intelligence.py --test
-python scripts\friday_project_intelligence.py --test --use-granite
+python scripts\friday_project_intelligence.py --test --use-local-router
 python scripts\friday_project_intelligence.py --fixtures
-python scripts\friday_project_intelligence.py --fixtures --use-granite
+python scripts\friday_project_intelligence.py --fixtures --use-local-router
 $env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --discover-notion --notion-limit 5
-$env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --notion-dry-run --notion-limit 5 --use-granite
-$env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --preview-page <notion-page-id> --use-granite --telegram-reply-to <target>
-$env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --auto-run --use-granite
+$env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --notion-dry-run --notion-limit 5 --use-local-router
+$env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --preview-page <notion-page-id> --use-local-router --telegram-reply-to <target>
+$env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --auto-run --use-local-router
 ```
 
 ## Remaining To Finish V1
@@ -119,7 +122,7 @@ $env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','Us
 - Missing-mapping Telegram delivery has been proven, and the useful-review branch uses the same raw Telegram sender.
 - Useful-review Telegram content is intentionally brief; Notion remains the full source of truth.
 - Configure Minimax auth if/when the middle worker tier is first needed.
-- Enable the prepared OpenClaw cron job when Amit accepts that the only untriggered live branch is "useful review sends Telegram"; the rest of v1 is end-to-end verified.
+- Keep the production OpenClaw cron job on the strict single-`exec` prompt and verify it stays healthy after cleanup.
 
 ## Safety Position
 

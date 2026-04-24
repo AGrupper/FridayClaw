@@ -2,31 +2,32 @@
 
 ## Summary
 
-Friday v1 is a Notion-first project intelligence pipeline. Ollama `granite3.3:2b` runs as the local heartbeat watcher roughly every 30 minutes, checks Notion session debriefs, and routes only new or blank-status debriefs to the correct GitHub/local project when it can do so safely.
+Friday v1 is a Notion-first project intelligence pipeline. OpenClaw runs the recurring cron wrapper with `qwen3:1.7b` roughly every 30 minutes, and the Python watcher uses Ollama `falcon3:3b` as the internal local router to check Notion session debriefs and route only new or blank-status debriefs to the correct GitHub/local project when it can do so safely.
 
-DeepSeek is not part of the recurring watcher loop. DeepSeek runs only on valid review candidates found by Granite, then writes useful review output back to the Notion debrief as a comment and sends the same substantive review to Amit on Telegram with a short context header.
+DeepSeek is not part of the recurring watcher loop. DeepSeek runs only on valid review candidates found by the local router, then writes useful review output back to the Notion debrief as a comment and sends the same substantive review to Amit on Telegram with a short context header.
 
 ## Architecture
 
-### Granite Heartbeat Watcher
+### Cron Wrapper And Local Router
 
-The watcher runs roughly every 30 minutes through Friday heartbeat behavior.
+The watcher runs roughly every 30 minutes through an OpenClaw cron job.
 
 Responsibilities:
 
 - check Notion for session debriefs with `New` or blank review status
 - use local lightweight state only for checkpoints and mappings
-- use Ollama `granite3.3:2b` for routing
+- use `qwen3:1.7b` only to launch the strict `exec` command through OpenClaw
+- use Ollama `falcon3:3b` for the actual debrief routing inside the Python script
 - extract project name, repo URL, local repo path, or repo hint
 - resolve the matching GitHub/local repo when safe
 - mark missing repo context as `Needs Repo Mapping`
 - decide whether a debrief is safe to send to DeepSeek
 
-The watcher must not produce project suggestions, review content, or product advice.
+The wrapper and router must not produce project suggestions, review content, or product advice.
 
 ### On-Demand DeepSeek Review
 
-DeepSeek runs only after Granite finds a valid new debrief with a safe project/repo match.
+DeepSeek runs only after the local router finds a valid new debrief with a safe project/repo match.
 
 Inputs:
 
@@ -123,13 +124,12 @@ Confirmed mappings can be added to the local mapping cache over time, but Notion
 
 ### Model Strategy
 
-V1 installs and uses only `granite3.3:2b` for watcher/routing work.
+V1 uses a split local model strategy:
 
-Granite runs on the heartbeat. DeepSeek does not.
+- `qwen3:1.7b` for the outer OpenClaw cron wrapper
+- `falcon3:3b` for the internal debrief router
 
-DeepSeek handles all deeper project reasoning and recommendations only after Granite finds a safe candidate.
-
-Do not install Qwen for v1. If Granite is inaccurate or too weak, evaluate `gemma4:e2b` later.
+DeepSeek handles all deeper project reasoning and recommendations only after the local router finds a safe candidate.
 
 ### Review Quality Rules
 
@@ -165,7 +165,7 @@ Later implementation should likely add:
 - Notion review status handling
 - lightweight local state files
 - project mapping cache
-- Granite routing prompt/template
+- local router prompt/template
 - on-demand DeepSeek review prompt/template
 - Notion comment writer
 - Telegram notifier with context header plus full review
@@ -173,8 +173,8 @@ Later implementation should likely add:
 ## Test Plan
 
 - Simulate Notion debriefs with blank/New, Reviewed, Needs Repo Mapping, and No Useful Suggestions statuses.
-- Confirm Granite only routes blank/New debriefs.
-- Confirm Granite does not generate advice.
+- Confirm the local router only routes blank/New debriefs.
+- Confirm the local router does not generate advice.
 - Confirm missing repo mapping produces `Needs Repo Mapping`.
 - Confirm useful DeepSeek output would be mirrored to both Notion comment and Telegram, with Telegram context header.
 - Confirm no-useful-suggestions output updates Notion but does not Telegram.
@@ -185,6 +185,5 @@ Later implementation should likely add:
 - Notion can support a review status property and comments on debrief pages.
 - Telegram integration will be used for notifications after the Notion watcher path is proven.
 - Local state remains technical only and does not become the primary review archive.
-- `granite3.3:2b` is used only for watcher/routing work.
 - DeepSeek is already connected to Friday and handles deeper reasoning on demand.
 - Friday remains suggest-only until Amit explicitly promotes him to approved writes or automatic updates.

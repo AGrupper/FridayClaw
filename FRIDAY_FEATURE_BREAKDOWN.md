@@ -2,27 +2,26 @@
 
 ## Summary
 
-Friday v1 is a Notion-first automated project intelligence pipeline. Ollama `granite3.3:2b` runs every roughly 30 minutes as the watcher/router, checks Notion session debriefs, routes safe candidates to the correct project/repo, and invokes DeepSeek only when there is a valid review candidate.
+Friday v1 is a Notion-first automated project intelligence pipeline. OpenClaw `qwen3:1.7b` runs every roughly 30 minutes as the cron wrapper, the Python watcher uses Ollama `falcon3:3b` as the internal router, and DeepSeek runs only when there is a valid review candidate.
 
 Notion is the source of truth for debriefs, review statuses, and Friday review comments. Local state stays lightweight and technical. Telegram receives the full useful review with a short context header.
 
 ## Milestone 1: Local Model Setup
 
-Goal: prepare the local watcher model.
+Goal: prepare the local wrapper and router models.
 
 Features:
 
-- Pull `granite3.3:2b` through Ollama.
-- Verify Ollama can run the model locally.
+- Pull `qwen3:1.7b` and `falcon3:3b` through Ollama.
+- Verify Ollama can run both models locally.
 - Test strict JSON output for routing tasks.
-- Do not install Qwen for v1.
-- Treat `gemma4:e2b` as a later fallback only.
+- Keep MiniMax as the cloud fallback only when the wrapper fails.
 
 Acceptance criteria:
 
-- `granite3.3:2b` responds locally.
-- Given a sample debrief, Granite returns structured routing data.
-- Granite does not produce project advice.
+- `qwen3:1.7b` can execute the cron wrapper command reliably.
+- Given a sample debrief, `falcon3:3b` returns structured routing data.
+- The local router does not produce project advice.
 
 ## Milestone 2: Lightweight Local State
 
@@ -48,7 +47,7 @@ Acceptance criteria:
 - Confirmed project mappings can be reused.
 - Local state remains technical and lightweight.
 
-## Milestone 3: Granite Notion Debrief Watcher
+## Milestone 3: Local Notion Debrief Watcher
 
 Goal: detect new reviewable session debriefs from Notion.
 
@@ -75,7 +74,7 @@ Goal: match each debrief to the correct GitHub/local project.
 Features:
 
 - Prefer explicit GitHub repo links or local paths in the debrief.
-- Extract project names and repo hints using `granite3.3:2b`.
+- Extract project names and repo hints using the configured local router.
 - Reuse confirmed mappings from local project map.
 - If no safe repo match exists, set Notion status to `Needs Repo Mapping`.
 - Add a Notion comment explaining what could not be resolved.
@@ -91,7 +90,7 @@ Acceptance criteria:
 
 ## Milestone 5: On-Demand DeepSeek Review Agent
 
-Goal: produce useful project intelligence from the debrief and repo context only after Granite finds a valid candidate.
+Goal: produce useful project intelligence from the debrief and repo context only after the local router finds a valid candidate.
 
 Features:
 
@@ -161,7 +160,8 @@ Acceptance criteria:
 
 ## Cross-Cutting Rules
 
-- Granite watcher/router runs on heartbeat and does not generate project advice.
+- The cron wrapper launches the watcher and does not invent extra tool behavior.
+- The local router handles routing only and does not generate project advice.
 - DeepSeek runs only on valid review candidates and handles all deeper reasoning.
 - Friday does not edit code, tasks, project docs, or repos automatically in v1.
 - Notion comment/status updates and Telegram messages are communication actions.
@@ -187,7 +187,6 @@ Use fixture-style tests or simulated Notion debriefs for:
 
 Potential future improvements:
 
-- evaluate `gemma4:e2b` if Granite routing quality is poor
 - add approved project-memory updates
 - allow automatic project-memory updates after enough trust
 - add a weekly project intelligence digest

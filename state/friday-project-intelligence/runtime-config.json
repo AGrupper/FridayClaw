@@ -1,15 +1,15 @@
 {
-  "version": 1,
-  "notion": {
-    "data_source_id": "33834a33-2bc2-80f5-9dd1-000bf76a48fa",
-    "status_property": "Status"
-  },
-  "models": {
-    "router_model": "ollama/granite3.3:2b",
-    "worker_model": "minimax/MiniMax-M2.7",
-    "executive_model": "openai-codex/gpt-5.4"
-  },
-  "telegram": {
-    "reply_to": "8626312520"
-  }
+    "version":  1,
+    "notion":  {
+                   "data_source_id":  "33834a33-2bc2-80f5-9dd1-000bf76a48fa",
+                   "status_property":  "Status"
+               },
+    "models":  {
+                   "router_model":  "ollama/falcon3:3b",
+                   "worker_model":  "minimax/MiniMax-M2.7",
+                   "executive_model":  "openai-codex/gpt-5.4"
+               },
+    "telegram":  {
+                     "reply_to":  "8626312520"
+                 }
 }

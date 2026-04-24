@@ -35,5 +35,5 @@ Add MCP integrations on demand, not preemptively. Available but dormant: Gmail, 
 
 ## Active Systems
 
-- **Friday v1 Project Intelligence** lives in this workspace. It checks Notion Session Debriefs, uses Granite for routing, GPT-5.4 for executive review, writes Friday comments/statuses back to Notion, and sends Telegram only when attention is needed.
+- **Friday v1 Project Intelligence** lives in this workspace. It checks Notion Session Debriefs, uses `qwen3:1.7b` as the OpenClaw cron wrapper, `falcon3:3b` as the internal local router, GPT-5.4 for executive review, writes Friday comments/statuses back to Notion, and sends Telegram only when attention is needed.
 - **Codex global session skills** now exist for `start-session` and `end-session`. They are adapted from Amit's Claude Code workflows and live under `C:\Users\Amit\.codex\skills`.
