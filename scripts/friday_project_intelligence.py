@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -33,11 +34,15 @@ PROCESSED_PATH = STATE_DIR / "processed-debriefs.json"
 PROJECT_MAP_PATH = STATE_DIR / "project-map.json"
 RUNTIME_CONFIG_PATH = STATE_DIR / "runtime-config.json"
 FIXTURE_PATH = STATE_DIR / "fixture-debriefs.json"
+FIXTURE_BRAINSTORM_PATH = STATE_DIR / "fixture-brainstorms.json"
+PROCESSED_BRAINSTORMS_PATH = STATE_DIR / "processed-brainstorms.json"
 PROMPT_PATH = STATE_DIR / "watcher-routing-prompt.md"
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2026-03-11"
 DEFAULT_NOTION_DATA_SOURCE_ID = "33834a33-2bc2-80f5-9dd1-000bf76a48fa"
 DEFAULT_NOTION_STATUS_PROPERTY = "Status"
+DEFAULT_BRAINSTORM_DATA_SOURCE_ID = ""
+DEFAULT_BRAINSTORM_STATUS_PROPERTY = "Status"
 DEFAULT_ROUTER_MODEL = "ollama/falcon3:3b"
 DEFAULT_WORKER_MODEL = "minimax/MiniMax-M2.7"
 DEFAULT_EXECUTIVE_MODEL = "openai-codex/gpt-5.4"
@@ -102,6 +107,16 @@ class Debrief:
     source: str = "fixture"
 
 
+@dataclass
+class BrainstormTranscript:
+    id: str
+    title: str
+    date: str
+    transcript: str
+    source_ref: str = ""
+    source: str = "voicepal_telegram"
+
+
 def load_json(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -121,6 +136,10 @@ def load_runtime_config() -> dict[str, Any]:
             "data_source_id": DEFAULT_NOTION_DATA_SOURCE_ID,
             "status_property": DEFAULT_NOTION_STATUS_PROPERTY,
         },
+        "brainstorm": {
+            "data_source_id": DEFAULT_BRAINSTORM_DATA_SOURCE_ID,
+            "status_property": DEFAULT_BRAINSTORM_STATUS_PROPERTY,
+        },
         "models": {
             "router_model": DEFAULT_ROUTER_MODEL,
             "worker_model": DEFAULT_WORKER_MODEL,
@@ -135,13 +154,14 @@ def load_runtime_config() -> dict[str, Any]:
     configured = load_json(RUNTIME_CONFIG_PATH)
     merged = defaults | configured
     merged["notion"] = defaults["notion"] | configured.get("notion", {})
+    merged["brainstorm"] = defaults["brainstorm"] | configured.get("brainstorm", {})
     merged["models"] = defaults["models"] | configured.get("models", {})
     merged["telegram"] = defaults["telegram"] | configured.get("telegram", {})
     return merged
 
 
 def notion_api_request(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    token = os.environ.get("NOTION_API_KEY")
+    token = os.environ.get("NOTION_API_KEY") or read_windows_user_env("NOTION_API_KEY")
     if not token:
         raise RuntimeError("NOTION_API_KEY is not visible to this process.")
 
@@ -361,6 +381,117 @@ def discover_notion_session_debriefs(limit: int = 5) -> dict[str, Any]:
     return discovery
 
 
+def discover_notion_brainstorm_digests(limit: int = 5) -> dict[str, Any]:
+    search_payload = {
+        "query": "brainstorm digests",
+        "filter": {"property": "object", "value": "data_source"},
+        "sort": {"direction": "descending", "timestamp": "last_edited_time"},
+        "page_size": 10,
+    }
+    search = notion_api_request("POST", "/search", search_payload)
+    matches: list[dict[str, Any]] = []
+    for item in search.get("results", []):
+        properties = item.get("properties", {})
+        matches.append(
+            {
+                "title": object_title(item),
+                "data_source_id": item.get("id"),
+                "database_id": (item.get("parent") or {}).get("database_id", ""),
+                "last_edited_time": item.get("last_edited_time"),
+                "property_schema": {name: schema_summary(schema) for name, schema in sorted(properties.items())},
+            }
+        )
+    selected = next((match for match in matches if str(match.get("title", "")).lower() == "brainstorm digests"), None)
+    selected = selected or (matches[0] if matches else None)
+    recent: list[dict[str, Any]] = []
+    if selected:
+        data = notion_api_request(
+            "POST",
+            f"/data_sources/{selected['data_source_id']}/query",
+            {"page_size": limit, "sorts": [{"timestamp": "last_edited_time", "direction": "descending"}]},
+        )
+        for page in data.get("results", []):
+            props = page.get("properties", {})
+            summarized = {name: property_value_summary(value) for name, value in props.items() if property_value_summary(value)}
+            recent.append(
+                {
+                    "page_id": page.get("id"),
+                    "title": next((value for name, value in summarized.items() if name.lower() == "name"), ""),
+                    "last_edited_time": page.get("last_edited_time"),
+                    "properties": summarized,
+                }
+            )
+    return {
+        "dry_run": True,
+        "notion_version": NOTION_VERSION,
+        "query": "brainstorm digests",
+        "matches": matches,
+        "selected": selected,
+        "recent_digests": recent,
+        "warnings": [] if selected else ["No Brainstorm Digests data source found. Create it or configure brainstorm.data_source_id."],
+    }
+
+
+def create_brainstorm_database(parent_page_id: str) -> dict[str, Any]:
+    payload = {
+        "parent": {"type": "page_id", "page_id": parent_page_id},
+        "title": [{"type": "text", "text": {"content": "Brainstorm Digests"}}],
+        "is_inline": False,
+        "properties": {
+            "Name": {"title": {}},
+            "Date": {"date": {}},
+            "Source": {"select": {"options": [{"name": "Voicepal Telegram", "color": "blue"}]}},
+            "Owner": {
+                "select": {
+                    "options": [
+                        {"name": "Friday", "color": "blue"},
+                        {"name": "Jarvis", "color": "green"},
+                        {"name": "Mixed", "color": "purple"},
+                        {"name": "Unknown", "color": "gray"},
+                    ]
+                }
+            },
+            "Project": {"rich_text": {}},
+            "Domain": {
+                "select": {
+                    "options": [
+                        {"name": "Project", "color": "blue"},
+                        {"name": "Personal", "color": "green"},
+                        {"name": "School", "color": "yellow"},
+                        {"name": "Business", "color": "orange"},
+                        {"name": "Finance Module", "color": "red"},
+                        {"name": "Mixed", "color": "purple"},
+                    ]
+                }
+            },
+            "Status": {
+                "select": {
+                    "options": [
+                        {"name": "New", "color": "gray"},
+                        {"name": "Processed", "color": "green"},
+                        {"name": "Needs Clarification", "color": "yellow"},
+                        {"name": "Linked to Debrief", "color": "blue"},
+                        {"name": "Ignored", "color": "gray"},
+                        {"name": "Archived", "color": "gray"},
+                    ]
+                }
+            },
+            "Confidence": {
+                "select": {
+                    "options": [
+                        {"name": "High", "color": "green"},
+                        {"name": "Medium", "color": "yellow"},
+                        {"name": "Low", "color": "red"},
+                    ]
+                }
+            },
+            "Source Ref": {"rich_text": {}},
+            "Proposed Actions Count": {"number": {"format": "number"}},
+        },
+    }
+    return notion_api_request("POST", "/databases", payload)
+
+
 def block_plain_text(block: dict[str, Any]) -> str:
     block_type = block.get("type")
     if not block_type:
@@ -445,6 +576,11 @@ def notion_property_kind(data_source_id: str, property_name: str) -> str:
     return kind
 
 
+def notion_data_source_schema(data_source_id: str) -> dict[str, Any]:
+    data = notion_api_request("GET", f"/data_sources/{data_source_id}")
+    return data.get("properties", {})
+
+
 def notion_update_status(page_id: str, status: str) -> dict[str, Any]:
     config = load_runtime_config()
     notion_config = config["notion"]
@@ -460,6 +596,134 @@ def notion_add_comment(page_id: str, body: str) -> dict[str, Any]:
     rich_text = [{"type": "text", "text": {"content": chunk}} for chunk in chunks]
     payload = {"parent": {"page_id": page_id}, "rich_text": rich_text}
     return notion_api_request("POST", "/comments", payload)
+
+
+def notion_property_value(schema: dict[str, Any], value: Any) -> dict[str, Any] | None:
+    kind = str(schema.get("type", ""))
+    text = str(value or "").strip()
+    if kind == "title":
+        return {"title": notion_rich_text_chunks(text[:2000])}
+    if kind == "rich_text":
+        return {"rich_text": notion_rich_text_chunks(text[:2000])}
+    if kind in {"select", "status"}:
+        if not text:
+            return None
+        return {kind: {"name": text}}
+    if kind == "date":
+        if not text:
+            return None
+        return {"date": {"start": text}}
+    if kind == "number":
+        try:
+            return {"number": int(value)}
+        except (TypeError, ValueError):
+            return None
+    if kind == "url":
+        return {"url": text or None}
+    return None
+
+
+def build_brainstorm_properties(digest: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+    project_value = digest["project"]
+    project_schema_name = {name.lower(): name for name in schema}.get("project")
+    if project_schema_name and schema[project_schema_name].get("type") in {"select", "status"}:
+        projects = digest.get("projects", [])
+        project_value = projects[0] if projects else ""
+    wanted = {
+        "Name": digest["name"],
+        "Date": digest["date"],
+        "Source": digest["source"],
+        "Owner": digest["owner"],
+        "Project": project_value,
+        "Domain": digest["domain"],
+        "Status": digest["status"],
+        "Confidence": digest["confidence"],
+        "Source Ref": digest["source_ref"],
+        "Proposed Actions Count": len(digest.get("proposed_actions", [])),
+    }
+    properties: dict[str, Any] = {}
+    lower_schema = {name.lower(): name for name in schema}
+    for wanted_name, value in wanted.items():
+        actual = lower_schema.get(wanted_name.lower())
+        if not actual:
+            continue
+        property_value = notion_property_value(schema[actual], value)
+        if property_value is not None:
+            properties[actual] = property_value
+    title_property = find_schema_property_by_type(schema, "title")
+    if title_property and title_property not in properties:
+        properties[title_property] = {"title": notion_rich_text_chunks(str(digest["name"])[:2000])}
+    return properties
+
+
+def find_schema_property_by_type(schema: dict[str, Any], prop_type: str) -> str:
+    for name, value in schema.items():
+        if value.get("type") == prop_type:
+            return name
+    return ""
+
+
+def build_brainstorm_children(digest: dict[str, Any]) -> list[dict[str, Any]]:
+    children: list[dict[str, Any]] = [
+        notion_text_block("heading_2", "Summary"),
+        notion_text_block("paragraph", digest.get("summary", "")),
+        notion_text_block("heading_2", "Routing"),
+        notion_text_block(
+            "paragraph",
+            f"Owner: {digest.get('owner', '')}\nProject: {digest.get('project', '') or 'Unmatched'}\nDomain: {digest.get('domain', '')}\nOutcome: {digest.get('main_outcome', '')}\nConfidence: {digest.get('confidence', '')}",
+        ),
+        notion_text_block("heading_2", "Key Decisions"),
+        *notion_bullets(digest.get("decisions", [])),
+        notion_text_block("heading_2", "Proposed Actions"),
+        *notion_bullets(digest.get("proposed_actions", [])),
+        notion_text_block("heading_2", "Project Ideas"),
+        *notion_bullets(digest.get("project_ideas", [])),
+        notion_text_block("heading_2", "Open Questions"),
+        *notion_bullets(digest.get("open_questions", [])),
+        notion_text_block("heading_2", "Handoff Notes"),
+        *notion_bullets(digest.get("handoff_notes", [])),
+        notion_text_block("heading_2", "Routed Items"),
+    ]
+    routed = [
+        f"{item.get('owner')} / {item.get('project') or 'Unmatched'} / {item.get('domain')} / {item.get('type')}: {item.get('text')}"
+        for item in digest.get("routed_items", [])
+    ]
+    children.extend(notion_bullets(routed))
+    children.extend(
+        [
+            notion_text_block("heading_2", "Why This May Matter Later"),
+            notion_text_block("paragraph", digest.get("why_it_matters_later", "")),
+            notion_text_block("paragraph", "Raw transcript intentionally not stored here. Voicepal remains the raw source archive."),
+        ]
+    )
+    return children[:95]
+
+
+def notion_create_brainstorm_digest(digest: dict[str, Any], data_source_id: str) -> dict[str, Any]:
+    schema = notion_data_source_schema(data_source_id)
+    payload = {
+        "parent": {"type": "data_source_id", "data_source_id": data_source_id},
+        "properties": build_brainstorm_properties(digest, schema),
+        "children": build_brainstorm_children(digest),
+    }
+    return notion_api_request("POST", "/pages", payload)
+
+
+def notion_rich_text_chunks(text: str, chunk_size: int = 1900) -> list[dict[str, Any]]:
+    chunks = [text[index : index + chunk_size] for index in range(0, len(text), chunk_size)] or [""]
+    return [{"type": "text", "text": {"content": chunk}} for chunk in chunks]
+
+
+def notion_text_block(block_type: str, text: str) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": block_type,
+        block_type: {"rich_text": notion_rich_text_chunks(text)},
+    }
+
+
+def notion_bullets(items: list[str]) -> list[dict[str, Any]]:
+    return [notion_text_block("bulleted_list_item", item) for item in items if item.strip()]
 
 
 def normalize_status(status: str | None) -> str:
@@ -486,6 +750,63 @@ def load_fixture_debriefs(path: Path = FIXTURE_PATH) -> list[Debrief]:
     return [parse_debrief(item) for item in data.get("debriefs", [])]
 
 
+def parse_brainstorm(raw: dict[str, Any]) -> BrainstormTranscript:
+    title = str(raw.get("title", "")).strip() or "Untitled Brainstorm"
+    transcript = str(raw.get("transcript", "") or raw.get("content", "")).strip()
+    date = str(raw.get("date", "")).strip() or datetime.now(timezone.utc).date().isoformat()
+    source_ref = str(raw.get("source_ref", "") or raw.get("sourceRef", "")).strip()
+    fingerprint = brainstorm_fingerprint(title, date, transcript)
+    return BrainstormTranscript(
+        id=str(raw.get("id", "")).strip() or fingerprint,
+        title=title,
+        date=date,
+        transcript=transcript,
+        source_ref=source_ref or title,
+        source=str(raw.get("source", "")).strip() or "voicepal_telegram",
+    )
+
+
+def load_fixture_brainstorms(path: Path = FIXTURE_BRAINSTORM_PATH) -> list[BrainstormTranscript]:
+    data = load_json(path)
+    return [parse_brainstorm(item) for item in data.get("brainstorms", [])]
+
+
+def load_brainstorm_file(path: Path, *, title: str = "", date: str = "", source_ref: str = "") -> BrainstormTranscript:
+    text = path.read_text(encoding="utf-8")
+    return load_brainstorm_text(text, title=title or path.stem, date=date, source_ref=source_ref or str(path))
+
+
+def load_brainstorm_text(text: str, *, title: str = "", date: str = "", source_ref: str = "") -> BrainstormTranscript:
+    detected_title, transcript = split_brainstorm_title(text)
+    return parse_brainstorm(
+        {
+            "title": title or detected_title or "Untitled Brainstorm",
+            "date": date or datetime.now(timezone.utc).date().isoformat(),
+            "source_ref": source_ref or title or detected_title or "stdin",
+            "transcript": transcript,
+        }
+    )
+
+
+def split_brainstorm_title(text: str) -> tuple[str, str]:
+    lines = [line.rstrip() for line in text.splitlines()]
+    non_empty = [line.strip() for line in lines if line.strip()]
+    if not non_empty:
+        return "", ""
+    first = non_empty[0]
+    if len(first) <= 120 and not first.lower().startswith(("assistant:", "you:", "user:")):
+        rest = "\n".join(lines[1:]).strip()
+        return first, rest or text.strip()
+    return "", text.strip()
+
+
+def brainstorm_fingerprint(title: str, date: str, transcript: str) -> str:
+    digest = hashlib.sha256()
+    normalized = "\n".join(line.strip().lower() for line in transcript.splitlines() if line.strip())
+    digest.update(f"{title.strip().lower()}\n{date.strip()}\n{normalized}".encode("utf-8", errors="replace"))
+    return digest.hexdigest()[:16]
+
+
 def load_project_map() -> dict[str, Any]:
     if not PROJECT_MAP_PATH.exists():
         return {"version": 1, "projects": []}
@@ -502,6 +823,17 @@ def load_processed_state() -> dict[str, Any]:
     if not PROCESSED_PATH.exists():
         return defaults
     data = load_json(PROCESSED_PATH)
+    return defaults | data
+
+
+def load_processed_brainstorm_state() -> dict[str, Any]:
+    defaults = {
+        "version": 1,
+        "processedBrainstorms": [],
+    }
+    if not PROCESSED_BRAINSTORMS_PATH.exists():
+        return defaults
+    data = load_json(PROCESSED_BRAINSTORMS_PATH)
     return defaults | data
 
 
@@ -558,6 +890,31 @@ def mark_unresolved_mapping(state: dict[str, Any], debrief: Debrief, route: dict
     )
 
 
+def mark_brainstorm_processed(
+    state: dict[str, Any],
+    brainstorm: BrainstormTranscript,
+    *,
+    fingerprint: str,
+    outcome: str,
+    status: str,
+    notion_page_id: str = "",
+) -> None:
+    append_state_record(
+        state,
+        "processedBrainstorms",
+        {
+            "id": fingerprint,
+            "title": brainstorm.title,
+            "date": brainstorm.date,
+            "sourceRef": brainstorm.source_ref,
+            "outcome": outcome,
+            "status": status,
+            "notionPageId": notion_page_id,
+            "processedAt": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
 def project_map_lookup(project_name: str, project_map: dict[str, Any]) -> dict[str, str]:
     wanted = project_name.strip().lower()
     for project in project_map.get("projects", []):
@@ -588,6 +945,360 @@ def model_bool(value: Any) -> bool:
 def repo_from_text(text: str) -> str:
     match = re.search(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", text)
     return match.group(0) if match else ""
+
+
+def sentence_chunks(text: str, max_items: int = 18) -> list[str]:
+    chunks: list[str] = []
+    for line in text.splitlines():
+        cleaned = re.sub(r"\s+", " ", line).strip()
+        if not cleaned:
+            continue
+        chunks.extend(re.split(r"(?<=[.!?])\s+", cleaned))
+    return [chunk.strip() for chunk in chunks if len(chunk.strip()) > 20][:max_items]
+
+
+def brainstorm_signal_text(text: str) -> str:
+    """Prefer Amit's Voicepal answers over interviewer prompts."""
+    normalized = text.replace("\r\n", "\n")
+    matches = re.findall(
+        r"(?:^|\b)(?:You|User)\s*:\s*(.*?)(?=\s*(?:Assistant|You|User)\s*:|\Z)",
+        normalized,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if matches:
+        return "\n".join(match.strip() for match in matches if match.strip())
+    lines = []
+    for line in normalized.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.lower().startswith("assistant:"):
+            continue
+        lines.append(stripped)
+    return "\n".join(lines).strip()
+
+
+def first_matching_sentences(text: str, patterns: list[str], *, max_items: int = 6) -> list[str]:
+    matches: list[str] = []
+    lowered_patterns = [pattern.lower() for pattern in patterns]
+    for sentence in sentence_chunks(text, max_items=80):
+        lowered = sentence.lower()
+        if any(pattern in lowered for pattern in lowered_patterns):
+            matches.append(sentence)
+        if len(matches) >= max_items:
+            break
+    return matches
+
+
+def classify_brainstorm_owner(text: str) -> str:
+    lowered = text.lower()
+    friday_hits = sum(
+        1
+        for token in [
+            "friday",
+            "project",
+            "github",
+            "repo",
+            "software",
+            "feature",
+            "build",
+            "business",
+            "school",
+            "trading",
+            "stock",
+            "agent",
+            "openclaw",
+        ]
+        if token in lowered
+    )
+    jarvis_hits = sum(
+        1
+        for token in [
+            "jarvis",
+            "personal",
+            "journal",
+            "health",
+            "garmin",
+            "calendar",
+            "morning briefing",
+            "evening review",
+            "routine",
+            "weather",
+            "readwise",
+        ]
+        if token in lowered
+    )
+    if friday_hits and jarvis_hits:
+        return "Mixed"
+    if friday_hits:
+        return "Friday"
+    if jarvis_hits:
+        return "Jarvis"
+    return "Unknown"
+
+
+def classify_brainstorm_domain(text: str) -> str:
+    lowered = text.lower()
+    domains: list[str] = []
+    if any(token in lowered for token in ["stock", "trading", "portfolio", "finance", "buy", "sell"]):
+        domains.append("Finance Module")
+    if any(token in lowered for token in ["school", "exam", "math", "computer science", "literature"]):
+        domains.append("School")
+    if any(token in lowered for token in ["business", "startup", "sell", "software idea"]):
+        domains.append("Business")
+    if any(token in lowered for token in ["journal", "health", "garmin", "calendar", "personal", "routine", "felt", "feeling", "stressed"]):
+        domains.append("Personal")
+    if any(token in lowered for token in ["project", "github", "repo", "feature", "build", "openclaw", "agent"]):
+        domains.append("Project")
+    unique = list(dict.fromkeys(domains))
+    if len(unique) > 1:
+        return "Mixed"
+    return unique[0] if unique else "Project"
+
+
+def infer_brainstorm_projects(text: str, project_map: dict[str, Any]) -> list[str]:
+    lowered = text.lower()
+    projects: list[str] = []
+    known = [project.get("name", "") for project in project_map.get("projects", [])]
+    for name in ["Friday", "Jarvis", "Jarvis-Friday Bridge", *known]:
+        if name and name.lower() in lowered and name not in projects:
+            projects.append(str(name))
+    if "morning briefing" in lowered and "Jarvis" not in projects:
+        projects.append("Jarvis")
+    if ("voicepal" in lowered or "brainstorm" in lowered) and "Friday" not in projects:
+        projects.append("Friday")
+    if ("stock" in lowered or "trading" in lowered) and "Friday" not in projects:
+        projects.append("Friday")
+    return projects
+
+
+def item_route(sentence: str, overall_owner: str, projects: list[str]) -> dict[str, str]:
+    lowered = sentence.lower()
+    owner = overall_owner if overall_owner != "Unknown" else "Unknown"
+    project = projects[0] if projects else ""
+    domain = classify_brainstorm_domain(sentence)
+    item_type = "Context"
+
+    build_terms = ["build", "feature", "add", "improve", "fix", "design", "create", "module", "agent", "openclaw", "learn"]
+    personal_context_terms = ["felt", "feeling", "bothering me", "my day", "journal", "health", "routine"]
+    if any(term in lowered for term in personal_context_terms) and not re.search(r"\bjarvis\s+should\b", lowered):
+        owner = "Jarvis"
+        project = project if project != "Friday" else ""
+        item_type = "Personal Context"
+    elif "jarvis" in lowered and (any(term in lowered for term in build_terms) or re.search(r"\bjarvis\s+should\b", lowered)):
+        owner = "Friday"
+        project = "Jarvis"
+        item_type = "Feature Idea"
+    elif "friday" in lowered or any(term in lowered for term in ["project", "repo", "github", "software"]):
+        owner = "Friday"
+        item_type = "Project Context"
+    elif "jarvis" in lowered:
+        owner = "Jarvis"
+        project = "Jarvis"
+
+    if "stock" in lowered or "trading" in lowered or "finance" in lowered:
+        owner = "Friday"
+        project = "Friday"
+        domain = "Finance Module"
+        item_type = "Future Module"
+    if "jarvis" in lowered and "friday" in lowered:
+        owner = "Mixed"
+        project = "Jarvis-Friday Bridge"
+        item_type = "Cross-Agent Idea"
+
+    return {"owner": owner, "project": project, "domain": domain, "type": item_type}
+
+
+def extract_brainstorm_decisions(text: str) -> list[str]:
+    patterns = ["i want", "should", "need", "would like", "going to", "don't need", "do not", "raw", "notion", "telegram"]
+    return first_matching_sentences(text, patterns, max_items=8)
+
+
+def extract_brainstorm_actions(text: str) -> list[str]:
+    patterns = ["create", "add", "build", "implement", "configure", "send", "store", "link", "route", "extract", "process"]
+    return first_matching_sentences(text, patterns, max_items=10)
+
+
+def extract_brainstorm_questions(text: str) -> list[str]:
+    questions = re.findall(r"[^?]{12,160}\?", text)
+    return [question.strip() for question in questions[:8]]
+
+
+def build_brainstorm_digest(brainstorm: BrainstormTranscript) -> dict[str, Any]:
+    project_map = load_project_map()
+    text = brainstorm.transcript
+    signal_text = brainstorm_signal_text(text)
+    fingerprint = brainstorm_fingerprint(brainstorm.title, brainstorm.date, text)
+    owner = classify_brainstorm_owner(signal_text)
+    domain = classify_brainstorm_domain(signal_text)
+    projects = infer_brainstorm_projects(signal_text, project_map)
+    decisions = extract_brainstorm_decisions(signal_text)
+    actions = extract_brainstorm_actions(signal_text)
+    questions = extract_brainstorm_questions(signal_text)
+    idea_sentences = first_matching_sentences(
+        signal_text,
+        ["idea", "feature", "module", "software", "project", "could", "maybe"],
+        max_items=8,
+    )
+    personal_sentences = first_matching_sentences(
+        signal_text,
+        ["i felt", "i feel", "my journal", "my day", "health", "routine", "personal"],
+        max_items=6,
+    )
+    routed_items = [
+        {"text": item, **item_route(item, owner, projects)}
+        for item in list(dict.fromkeys([*decisions, *actions, *idea_sentences, *personal_sentences]))[:18]
+    ]
+    handoff_notes = [
+        item["text"]
+        for item in routed_items
+        if item.get("owner") == "Jarvis" and item.get("type") == "Personal Context"
+    ][:6]
+    status = "Needs Clarification" if owner == "Unknown" else "Processed"
+    confidence = "High" if projects and owner != "Unknown" else ("Medium" if owner != "Unknown" else "Low")
+    main_outcome = "Ask clarification" if status == "Needs Clarification" else ("Link to latest debrief" if projects else "Store digest only")
+    name = f"{brainstorm.title} - {brainstorm.date}"
+
+    return {
+        "fingerprint": fingerprint,
+        "name": name,
+        "title": brainstorm.title,
+        "date": brainstorm.date,
+        "source": "Voicepal Telegram",
+        "source_ref": brainstorm.source_ref,
+        "owner": owner,
+        "domain": domain,
+        "projects": projects,
+        "project": ", ".join(projects),
+        "status": status,
+        "confidence": confidence,
+        "main_outcome": main_outcome,
+        "summary": summarize_brainstorm(signal_text, owner, projects),
+        "decisions": decisions,
+        "proposed_actions": actions,
+        "project_ideas": idea_sentences,
+        "open_questions": questions,
+        "handoff_notes": handoff_notes,
+        "routed_items": routed_items,
+        "why_it_matters_later": why_brainstorm_matters(owner, projects, actions, decisions),
+        "raw_transcript_stored": False,
+    }
+
+
+def summarize_brainstorm(text: str, owner: str, projects: list[str]) -> str:
+    first_sentences = sentence_chunks(text, max_items=3)
+    project_text = ", ".join(projects) if projects else "no confident project"
+    if first_sentences:
+        return f"Voicepal brainstorm classified as {owner} with {project_text}. Main thread: {' '.join(first_sentences)[:500]}"
+    return f"Voicepal brainstorm classified as {owner} with {project_text}."
+
+
+def why_brainstorm_matters(owner: str, projects: list[str], actions: list[str], decisions: list[str]) -> str:
+    if owner == "Unknown":
+        return "Friday needs a clarification before this can become reliable project intelligence."
+    pieces = [f"It records {owner.lower()}-owned intent"]
+    if projects:
+        pieces.append(f"for {', '.join(projects)}")
+    if actions:
+        pieces.append(f"with {len(actions)} possible follow-up actions")
+    if decisions:
+        pieces.append(f"and {len(decisions)} decisions/preferences to preserve")
+    return " ".join(pieces) + "."
+
+
+def preview_brainstorm(brainstorm: BrainstormTranscript) -> dict[str, Any]:
+    digest = build_brainstorm_digest(brainstorm)
+    state = load_processed_brainstorm_state()
+    processed = state_id_set(state.get("processedBrainstorms", []))
+    duplicate = digest["fingerprint"] in processed
+    telegram = draft_brainstorm_telegram_reply(digest, duplicate=duplicate)
+    return {
+        "dry_run": True,
+        "duplicate": duplicate,
+        "raw_transcript_stored": False,
+        "digest": digest,
+        "telegram_message": telegram,
+        "planned_actions": [{"type": "skip", "reason": "Duplicate brainstorm fingerprint."}]
+        if duplicate
+        else brainstorm_planned_actions(digest),
+    }
+
+
+def brainstorm_planned_actions(digest: dict[str, Any]) -> list[dict[str, Any]]:
+    actions = [
+        {"type": "notion_page", "database": "Brainstorm Digests", "name": digest["name"]},
+        {"type": "notion_body", "stores_raw_transcript": False},
+    ]
+    if digest.get("main_outcome") == "Ask clarification":
+        actions.append({"type": "telegram_clarification", "body": "I need one clarification before routing this brainstorm."})
+    else:
+        actions.append({"type": "telegram_summary", "body": draft_brainstorm_telegram_reply(digest)})
+    if digest.get("projects"):
+        actions.append({"type": "project_link_candidate", "projects": digest.get("projects", [])})
+    return actions
+
+
+def draft_brainstorm_telegram_reply(digest: dict[str, Any], *, duplicate: bool = False) -> str:
+    if duplicate:
+        return f"I already filed `{digest['name']}`. I skipped the duplicate."
+    projects = digest.get("project") or "Unmatched"
+    decisions = len(digest.get("decisions", []))
+    actions = len(digest.get("proposed_actions", []))
+    future_modules = sum(1 for item in digest.get("routed_items", []) if item.get("type") == "Future Module")
+    if digest.get("main_outcome") == "Ask clarification":
+        return (
+            f"Filed a draft digest for `{digest['name']}`, but I need one clarification before routing it. "
+            "Is this for Friday, Jarvis, or both?"
+        )
+    extra = f", and {future_modules} future modules" if future_modules else ""
+    return (
+        f"Filed `{digest['name']}`. Owner: {digest.get('owner')}. Projects: {projects}. "
+        f"I found {decisions} decisions, {actions} proposed actions{extra}."
+    )
+
+
+def apply_brainstorm(
+    brainstorm: BrainstormTranscript,
+    *,
+    data_source_id: str = "",
+    telegram_reply_to: str = "",
+    send_telegram: bool = False,
+) -> dict[str, Any]:
+    config = load_runtime_config()
+    target_data_source_id = data_source_id or str(config["brainstorm"].get("data_source_id", "")).strip()
+    if not target_data_source_id:
+        raise RuntimeError("Brainstorm Digests data source ID is missing. Run discovery/create first or pass --brainstorm-data-source-id.")
+
+    preview = preview_brainstorm(brainstorm)
+    digest = preview["digest"]
+    if preview["duplicate"]:
+        return {"applied": False, "duplicate": True, "preview": preview}
+
+    page = notion_create_brainstorm_digest(digest, target_data_source_id)
+    state = load_processed_brainstorm_state()
+    mark_brainstorm_processed(
+        state,
+        brainstorm,
+        fingerprint=digest["fingerprint"],
+        outcome=digest["main_outcome"],
+        status=digest["status"],
+        notion_page_id=str(page.get("id", "")),
+    )
+    save_json(PROCESSED_BRAINSTORMS_PATH, state)
+
+    telegram_result = None
+    if send_telegram:
+        target = telegram_reply_to or str(config["telegram"].get("reply_to", "")).strip()
+        if not target:
+            raise RuntimeError("Telegram reply target is missing.")
+        telegram_result = send_openclaw_telegram(preview["telegram_message"], target)
+
+    return {
+        "applied": True,
+        "page_id": page.get("id"),
+        "page_url": page.get("url"),
+        "telegram_sent": bool(telegram_result),
+        "telegram_result": telegram_result,
+        "preview": preview,
+    }
 
 
 def deterministic_route(debrief: Debrief, project_map: dict[str, Any]) -> dict[str, Any]:
@@ -786,6 +1497,32 @@ def github_api_get(path: str) -> Any:
     )
     with urlopen(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def read_windows_user_env(name: str) -> str:
+    if os.name != "nt":
+        return ""
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        return ""
+    try:
+        result = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-Command",
+                f"[Environment]::GetEnvironmentVariable('{name}','User')",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
 
 
 def decode_github_text_file(file_info: dict[str, Any], max_chars: int = 6000) -> str:
@@ -1521,6 +2258,56 @@ def run_fixture_tests(use_local_router: bool = False, ollama_model: str | None =
     return 0
 
 
+def run_brainstorm_fixture_tests() -> int:
+    brainstorms = load_fixture_brainstorms()
+    previews = [preview_brainstorm(brainstorm) for brainstorm in brainstorms]
+    by_id = {preview["digest"]["title"]: preview for preview in previews}
+    sample = by_id["Enhancing Personal and Work Agents with OpenClaw"]
+    digest = sample["digest"]
+    routed = digest["routed_items"]
+
+    assertions = [
+        ("sample should classify as mixed", digest["owner"] == "Mixed"),
+        ("sample should not store raw transcript", digest["raw_transcript_stored"] is False),
+        ("name should use title plus date", digest["name"] == "Enhancing Personal and Work Agents with OpenClaw - 2026-04-24"),
+        (
+            "Jarvis feature-building routes to Friday/Jarvis",
+            any(
+                item["owner"] == "Friday"
+                and item["project"] == "Jarvis"
+                and "learn from my journal" in item["text"]
+                for item in routed
+            ),
+        ),
+        (
+            "pure personal context routes to Jarvis",
+            any(
+                item["owner"] == "Jarvis"
+                and item["type"] == "Personal Context"
+                and item["domain"] == "Personal"
+                for item in routed
+            ),
+        ),
+        (
+            "finance module routes as future Friday module",
+            any(item["owner"] == "Friday" and item["domain"] == "Finance Module" and item["type"] == "Future Module" for item in routed),
+        ),
+        ("telegram summary is concise", len(sample["telegram_message"]) < 350),
+    ]
+
+    failed = [name for name, ok in assertions if not ok]
+    if failed:
+        print("Brainstorm fixture tests failed:")
+        for name in failed:
+            print(f"- {name}")
+        print(json.dumps(previews, indent=2))
+        return 1
+
+    print("Brainstorm fixture tests passed.")
+    print(json.dumps(previews, indent=2))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Friday project intelligence dry-run watcher")
     parser.add_argument("--fixtures", action="store_true", help="Process local fake debrief fixtures")
@@ -1534,10 +2321,23 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--ollama-model", help="Override the local Ollama router tag (for example falcon3:3b)")
     parser.add_argument("--discover-notion", action="store_true", help="Read-only discovery for the session debriefs Notion source")
+    parser.add_argument("--discover-brainstorm-notion", action="store_true", help="Read-only discovery for the Brainstorm Digests Notion source")
+    parser.add_argument("--create-brainstorm-database", help="Create Brainstorm Digests under this Notion parent page id")
     parser.add_argument("--notion-dry-run", action="store_true", help="Preview planned actions for recent Notion debriefs")
     parser.add_argument("--notion-limit", type=int, default=5, help="Recent Notion debrief rows to fetch during discovery")
     parser.add_argument("--auto-run", action="store_true", help="Run automatic Friday v1 processing for recent Notion debriefs")
     parser.add_argument("--auto-limit", type=int, default=10, help="Recent Notion debrief rows to inspect during automatic processing")
+    parser.add_argument("--brainstorm-fixtures", action="store_true", help="Preview local Voicepal brainstorm fixtures")
+    parser.add_argument("--brainstorm-test", action="store_true", help="Run brainstorm fixture assertions")
+    parser.add_argument("--brainstorm-file", help="Preview one Voicepal brainstorm transcript file without writes")
+    parser.add_argument("--apply-brainstorm-file", help="Create one Brainstorm Digests Notion page from a transcript file")
+    parser.add_argument("--brainstorm-stdin", action="store_true", help="Preview one Voicepal brainstorm transcript from stdin without writes")
+    parser.add_argument("--apply-brainstorm-stdin", action="store_true", help="Create one Brainstorm Digests Notion page from stdin")
+    parser.add_argument("--brainstorm-title", help="Override detected Voicepal title")
+    parser.add_argument("--brainstorm-date", help="Override brainstorm date, YYYY-MM-DD")
+    parser.add_argument("--brainstorm-source-ref", help="Telegram message id/date or Voicepal title reference")
+    parser.add_argument("--brainstorm-data-source-id", help="Brainstorm Digests data source ID override")
+    parser.add_argument("--send-brainstorm-telegram", action="store_true", help="Send the concise brainstorm filing reply over Telegram during apply")
     parser.add_argument("--preview-page", help="Preview planned actions for one exact Notion page id without writes")
     parser.add_argument("--apply-page", help="Apply live Notion/Telegram actions only for this exact Notion page id")
     parser.add_argument("--telegram-reply-to", help="Telegram delivery target override for apply/preview")
@@ -1551,8 +2351,78 @@ def main(argv: list[str]) -> int:
     if args.test:
         return run_fixture_tests(use_local_router=args.use_local_router, ollama_model=args.ollama_model)
 
+    if args.brainstorm_test:
+        return run_brainstorm_fixture_tests()
+
     if args.discover_notion:
         result = discover_notion_session_debriefs(limit=args.notion_limit)
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if args.discover_brainstorm_notion:
+        result = discover_notion_brainstorm_digests(limit=args.notion_limit)
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if args.create_brainstorm_database:
+        result = create_brainstorm_database(args.create_brainstorm_database)
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if args.brainstorm_fixtures:
+        result = [preview_brainstorm(brainstorm) for brainstorm in load_fixture_brainstorms()]
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if args.brainstorm_file:
+        brainstorm = load_brainstorm_file(
+            Path(args.brainstorm_file),
+            title=args.brainstorm_title or "",
+            date=args.brainstorm_date or "",
+            source_ref=args.brainstorm_source_ref or "",
+        )
+        print(json.dumps(preview_brainstorm(brainstorm), indent=2))
+        return 0
+
+    if args.brainstorm_stdin:
+        brainstorm = load_brainstorm_text(
+            sys.stdin.read(),
+            title=args.brainstorm_title or "",
+            date=args.brainstorm_date or "",
+            source_ref=args.brainstorm_source_ref or "telegram stdin",
+        )
+        print(json.dumps(preview_brainstorm(brainstorm), indent=2))
+        return 0
+
+    if args.apply_brainstorm_file:
+        brainstorm = load_brainstorm_file(
+            Path(args.apply_brainstorm_file),
+            title=args.brainstorm_title or "",
+            date=args.brainstorm_date or "",
+            source_ref=args.brainstorm_source_ref or "",
+        )
+        result = apply_brainstorm(
+            brainstorm,
+            data_source_id=args.brainstorm_data_source_id or "",
+            telegram_reply_to=args.telegram_reply_to or "",
+            send_telegram=args.send_brainstorm_telegram,
+        )
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if args.apply_brainstorm_stdin:
+        brainstorm = load_brainstorm_text(
+            sys.stdin.read(),
+            title=args.brainstorm_title or "",
+            date=args.brainstorm_date or "",
+            source_ref=args.brainstorm_source_ref or "telegram stdin",
+        )
+        result = apply_brainstorm(
+            brainstorm,
+            data_source_id=args.brainstorm_data_source_id or "",
+            telegram_reply_to=args.telegram_reply_to or "",
+            send_telegram=args.send_brainstorm_telegram,
+        )
         print(json.dumps(result, indent=2))
         return 0
 

@@ -122,6 +122,27 @@ Reactions are lightweight social signals. Humans use them constantly — they sa
 
 Skills provide your tools. When you need one, check its `SKILL.md`. Keep local notes (camera names, SSH details, voice preferences) in `TOOLS.md`.
 
+## Friday Voicepal Brainstorm Intake
+
+When Amit sends a Telegram message that starts with `/brainstorm` or clearly says it is a Voicepal brainstorming session, do **not** reply with a normal summary and do **not** ask what to do with it.
+
+Treat it as a command to file a processed brainstorm digest:
+
+1. Use the shared Voicepal title plus today's date as the digest name.
+2. Run `scripts\friday_project_intelligence.py` with `--apply-brainstorm-stdin` so the transcript is converted into a `Brainstorm Digests` Notion page.
+3. Do not store the full raw transcript in Notion, memory, or local files. Voicepal is the raw archive.
+4. If you must use a temporary file because stdin is unavailable, delete it after the command succeeds or fails.
+5. Reply only with the concise filing result from the script.
+
+Use this PowerShell shape from `C:\Users\Amit\.openclaw\workspace`:
+
+```powershell
+$env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User')
+<transcript text via stdin> | python scripts\friday_project_intelligence.py --apply-brainstorm-stdin --brainstorm-title "<Voicepal title>" --brainstorm-date <YYYY-MM-DD> --telegram-reply-to 8626312520 --send-brainstorm-telegram
+```
+
+Routing rule: Friday handles project/work interpretation, including building or improving Jarvis as software. Jarvis handles personal-life context and personal-life execution.
+
 **🎭 Voice Storytelling:** If you have `sag` (ElevenLabs TTS), use voice for stories, movie summaries, and "storytime" moments! Way more engaging than walls of text. Surprise people with funny voices.
 
 **📝 Platform Formatting:**

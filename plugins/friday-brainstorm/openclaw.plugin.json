@@ -1,0 +1,10 @@
+{
+  "id": "friday-brainstorm",
+  "name": "Friday Brainstorm Intake",
+  "description": "Deterministic Voicepal brainstorming intake for Friday.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

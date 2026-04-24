@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "processedBrainstorms": [
+    {
+      "id": "ea4aa7d824343e86",
+      "title": "Enhancing Personal and Work Agents with OpenClaw",
+      "date": "2026-04-24",
+      "sourceRef": "live smoke test",
+      "outcome": "Link to latest debrief",
+      "status": "Processed",
+      "notionPageId": "34c34a33-2bc2-8164-863b-d0a9ba07364b",
+      "processedAt": "2026-04-24T16:09:43.569060+00:00"
+    },
+    {
+      "id": "dcfe54f729ecdab9",
+      "title": "Enhancing Personal and Work Agents with OpenClaw",
+      "date": "2026-04-24",
+      "sourceRef": "telegram:8626312520 message 21",
+      "outcome": "Link to latest debrief",
+      "status": "Processed",
+      "notionPageId": "34c34a33-2bc2-81ff-a275-f67e2f938cb2",
+      "processedAt": "2026-04-24T18:03:47.515160+00:00"
+    },
+    {
+      "id": "7093cbc733c74653",
+      "title": "Enhancing Personal and Work Agents with OpenClaw",
+      "date": "2026-04-24",
+      "sourceRef": "telegram sender 8626312520 session agent:main:telegram:direct:8626312520",
+      "outcome": "Link to latest debrief",
+      "status": "Processed",
+      "notionPageId": "34c34a33-2bc2-817f-ba12-de4eadb7e7ab",
+      "processedAt": "2026-04-24T18:29:04.063087+00:00"
+    }
+  ]
+}

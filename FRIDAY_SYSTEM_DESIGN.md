@@ -61,6 +61,7 @@ Notion stores:
 - Friday review comments
 - no-useful-suggestions notes
 - missing repo mapping comments
+- processed Voicepal brainstorm digests
 
 Local state stays lightweight and technical only:
 
@@ -70,6 +71,28 @@ Local state stays lightweight and technical only:
 - unresolved mapping IDs if useful
 
 Project repositories are read-only context. Do not store session debriefs or Friday reviews in repos by default.
+
+### Voicepal Brainstorm Digests
+
+Friday accepts Voicepal brainstorm text through the Telegram intake path, then stores a processed digest in a `Brainstorm Digests` Notion data source.
+
+Friday does not copy the full raw transcript into Notion or local files. Voicepal remains the raw archive. Local state stores only technical fingerprints and created Notion page IDs for duplicate prevention.
+
+Digest properties:
+
+- `Name`: existing Voicepal/shared title plus date
+- `Date`
+- `Source`: `Voicepal Telegram`
+- `Owner`: `Friday`, `Jarvis`, `Mixed`, or `Unknown`
+- `Project`
+- `Domain`: `Project`, `Personal`, `School`, `Business`, `Finance Module`, or `Mixed`
+- `Status`: `New`, `Processed`, `Needs Clarification`, `Linked to Debrief`, `Ignored`, or `Archived`
+- `Confidence`
+- `Linked Debrief` when configured in Notion
+- `Source Ref`
+- `Proposed Actions Count`
+
+Routing separates who builds or acts from what the content is about. Building or improving Jarvis is Friday-owned project work with project `Jarvis`. Pure personal-life context is Jarvis-owned handoff context until a Jarvis-Friday bridge exists.
 
 ### Notion Statuses
 
@@ -179,6 +202,9 @@ Later implementation should likely add:
 - Confirm useful DeepSeek output would be mirrored to both Notion comment and Telegram, with Telegram context header.
 - Confirm no-useful-suggestions output updates Notion but does not Telegram.
 - Confirm no full debrief/review archive is stored locally.
+- Confirm Voicepal brainstorm intake stores processed digests only and does not persist raw transcripts locally or in Notion.
+- Confirm Jarvis feature requests route to owner `Friday`, project `Jarvis`.
+- Confirm pure personal-life context routes to owner `Jarvis`.
 
 ## Assumptions
 

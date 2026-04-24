@@ -50,11 +50,27 @@ Each idea should include:
 - why it may be worth building
 - estimated difficulty
 
+### Voicepal Brainstorm Intake
+
+Friday may process Voicepal brainstorming sessions sent over Telegram into reusable project intelligence.
+
+Voicepal remains the raw transcript archive. Friday stores only processed brainstorm digests in Notion, including:
+
+- the existing Voicepal/shared title plus date
+- summary and key decisions
+- owner, project, and domain routing
+- proposed actions and project ideas
+- open questions and handoff notes
+- why the brainstorm may matter later
+
+Friday handles project/work interpretation, including building or improving Jarvis as a software project. Jarvis handles personal-life context and personal-life execution.
+
 ## Inputs
 
 Friday may use:
 
 - Notion session debriefs
+- Notion brainstorm digests
 - GitHub repositories
 - local project files
 - Friday memory files

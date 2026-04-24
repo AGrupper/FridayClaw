@@ -1,0 +1,11 @@
+{
+  "brainstorms": [
+    {
+      "id": "fixture-agent-brainstorm",
+      "title": "Enhancing Personal and Work Agents with OpenClaw",
+      "date": "2026-04-24",
+      "source_ref": "fixture voicepal telegram share",
+      "transcript": "I want to create an agent for my personal life with OpenClaw and one agent for my work life on OpenClaw as well. My personal agent is called Jarvis and my work agent is called Friday. I want Friday to read session debriefs and GitHub for project suggestions. I want to improve Jarvis morning briefing with news summaries. Jarvis should learn from my journal so he understands my life better. I felt stressed today and want Jarvis to understand that about me. Jarvis and Friday should coordinate tomorrow's work block. Friday should eventually research stocks and trading ideas as a feature, but actual buy or sell advice should come later after we design the module. We should create a Brainstorm Digests database and route each item by owner, project, and domain."
+    }
+  ]
+}

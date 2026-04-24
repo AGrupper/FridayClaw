@@ -60,6 +60,19 @@
   - Notion comment write succeeded
   - Telegram was correctly suppressed
 - Ran `--auto-run` twice manually; both runs skipped handled rows and did not duplicate actions.
+- Added Voicepal brainstorm intake preview/apply support:
+  - `Brainstorm Digests` Notion data-source discovery and optional database creation
+  - processed digest generation from transcript files
+  - owner/project/domain routing for Friday, Jarvis, Mixed, and Unknown items
+  - duplicate fingerprints in lightweight local state
+  - explicit `--apply-brainstorm-file` live write path
+  - raw transcripts intentionally excluded from Notion/local storage
+- Discovered Amit-created `Brainstorm Digests` Notion data source and configured it in `runtime-config.json`:
+  - data source ID: `34c34a33-2bc2-8019-a832-000b1c74ba5b`
+  - database ID: `34c34a33-2bc2-8086-8ce2-c1452a8a4a50`
+- Confirmed OpenClaw Telegram is enabled for the default `main`/FRIDAY agent in this workspace, with Amit's Telegram user ID allowlisted.
+- Added the live `/brainstorm` OpenClaw plugin at `C:\Users\Amit\.openclaw\extensions\friday-brainstorm`, with a versioned source copy in `plugins/friday-brainstorm`.
+- Restarted the local OpenClaw gateway after it was listening but closing WebSocket probes; confirmed the gateway is reachable and Telegram is running in polling mode.
 
 ## Notion Discovery
 
@@ -107,14 +120,22 @@ Because Notion is the source of truth for v1, unattended live writes should stay
 
 ```powershell
 python scripts\friday_project_intelligence.py --test
+python scripts\friday_project_intelligence.py --brainstorm-test
 python scripts\friday_project_intelligence.py --test --use-local-router
 python scripts\friday_project_intelligence.py --fixtures
 python scripts\friday_project_intelligence.py --fixtures --use-local-router
+python scripts\friday_project_intelligence.py --brainstorm-fixtures
+python scripts\friday_project_intelligence.py --brainstorm-file <transcript.txt> --brainstorm-title "<Voicepal title>" --brainstorm-date 2026-04-24
 $env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --discover-notion --notion-limit 5
+$env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --discover-brainstorm-notion --notion-limit 5
+$env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --create-brainstorm-database <parent-page-id>
 $env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --notion-dry-run --notion-limit 5 --use-local-router
 $env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --preview-page <notion-page-id> --use-local-router --telegram-reply-to <target>
 $env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --auto-run --use-local-router
+$env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --apply-brainstorm-file <transcript.txt> --brainstorm-data-source-id <brainstorm-data-source-id> --telegram-reply-to <target> --send-brainstorm-telegram
 ```
+
+The configured `Brainstorm Digests` data-source ID can be omitted from `--apply-brainstorm-file` unless overriding the target.
 
 ## Remaining To Finish V1
 
