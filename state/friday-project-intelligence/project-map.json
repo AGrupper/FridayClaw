@@ -9,6 +9,15 @@
       ],
       "repo_url": "https://github.com/AGrupper/Jarvis1.0",
       "local_repo_path": ""
+    },
+    {
+      "name": "Friday",
+      "aliases": [
+        "FridayClaw",
+        "OpenClaw workspace"
+      ],
+      "repo_url": "https://github.com/AGrupper/FridayClaw",
+      "local_repo_path": "C:\\Users\\Amit\\.openclaw\\workspace"
     }
   ]
 }

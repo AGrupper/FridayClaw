@@ -14,6 +14,7 @@ python scripts\friday_project_intelligence.py --brainstorm-fixtures
 python scripts\friday_project_intelligence.py --brainstorm-file <transcript.txt> --brainstorm-title "<Voicepal title>" --brainstorm-date 2026-04-24
 Get-Content <transcript.txt> -Raw | python scripts\friday_project_intelligence.py --brainstorm-stdin --brainstorm-title "<Voicepal title>" --brainstorm-date 2026-04-24
 $env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --discover-notion --notion-limit 5
+$env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --ensure-carryover-schema
 $env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --discover-brainstorm-notion --notion-limit 5
 $env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --create-brainstorm-database <parent-page-id>
 $env:NOTION_API_KEY = [Environment]::GetEnvironmentVariable('NOTION_API_KEY','User'); python scripts\friday_project_intelligence.py --notion-dry-run --notion-limit 5 --use-local-router

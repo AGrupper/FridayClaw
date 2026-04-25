@@ -1,6 +1,41 @@
 {
   "version": 1,
-  "lastCheckedAt": "2026-04-23T11:42:15.120281+00:00",
-  "processedDebriefs": [],
-  "unresolvedMappings": []
+  "lastCheckedAt": "2026-04-25T05:30:36.937490+00:00",
+  "processedDebriefs": [
+    {
+      "id": "34b34a33-2bc2-81cb-9713-d92cae905278",
+      "title": "[Friday] Session Debrief - 2026-04-23 15:19",
+      "outcome": "needs_repo_mapping",
+      "status": "Needs Repo Mapping",
+      "telegramSent": true,
+      "error": "",
+      "processedAt": "2026-04-23T14:08:30.835852+00:00"
+    },
+    {
+      "id": "34c34a33-2bc2-81fb-9cac-db4c0843c6fb",
+      "title": "[Friday] Session Debrief - 2026-04-24 21:35",
+      "outcome": "reviewed",
+      "status": "Reviewed",
+      "telegramSent": true,
+      "error": "",
+      "processedAt": "2026-04-24T18:44:36.925559+00:00"
+    },
+    {
+      "id": "34c34a33-2bc2-81b7-87fb-c49cc8e095a5",
+      "title": "[Friday] Session Debrief - 2026-04-24 18:00",
+      "outcome": "reviewed",
+      "status": "Reviewed",
+      "telegramSent": true,
+      "error": "",
+      "processedAt": "2026-04-24T18:46:13.713027+00:00"
+    }
+  ],
+  "unresolvedMappings": [
+    {
+      "id": "34b34a33-2bc2-81cb-9713-d92cae905278",
+      "title": "[Friday] Session Debrief - 2026-04-23 15:19",
+      "project": "Friday",
+      "recordedAt": "2026-04-23T14:08:30.835835+00:00"
+    }
+  ]
 }

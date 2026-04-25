@@ -59,6 +59,7 @@ Notion stores:
 - session debriefs
 - review status
 - Friday review comments
+- carryover status and specific carryover topic for future session resume targeting
 - no-useful-suggestions notes
 - missing repo mapping comments
 - processed Voicepal brainstorm digests
@@ -103,6 +104,17 @@ Friday should add or use a review status property on session debriefs:
 - `Needs Repo Mapping`
 - `No Useful Suggestions`
 - `Review Failed`
+
+### Carryover Threads
+
+`Status` tracks Friday's review processing state. `Carryover` separately tracks whether the debrief should be offered as a future resume target.
+
+Session debriefs should include:
+
+- `Carryover`: `Actionable`, `Not Actionable`, or `Resolved`
+- `Carryover Topic`: a specific feature-thread label, such as `Friday project-intelligence cron: useful-review Telegram context`
+
+`No Useful Suggestions` does not imply `Not Actionable`. If the debrief itself has open items, next steps, or unfinished work, Friday should mark carryover as `Actionable`.
 
 Future optional statuses:
 

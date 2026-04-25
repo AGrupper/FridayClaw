@@ -6,3 +6,9 @@ __pycache__/
 *credentials*
 *.key
 *.pem
+DREAMS.md
+memory/.dreams/
+memory/dreaming/
+memory/*-awake-check.md
+state/friday-project-intelligence/benchmark/
+state/friday-project-intelligence/brainstorm-pending.json

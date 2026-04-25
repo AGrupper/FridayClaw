@@ -41,11 +41,17 @@ NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2026-03-11"
 DEFAULT_NOTION_DATA_SOURCE_ID = "33834a33-2bc2-80f5-9dd1-000bf76a48fa"
 DEFAULT_NOTION_STATUS_PROPERTY = "Status"
+DEFAULT_NOTION_CARRYOVER_PROPERTY = "Carryover"
+DEFAULT_NOTION_CARRYOVER_TOPIC_PROPERTY = "Carryover Topic"
 DEFAULT_BRAINSTORM_DATA_SOURCE_ID = ""
 DEFAULT_BRAINSTORM_STATUS_PROPERTY = "Status"
 DEFAULT_ROUTER_MODEL = "ollama/falcon3:3b"
 DEFAULT_WORKER_MODEL = "minimax/MiniMax-M2.7"
 DEFAULT_EXECUTIVE_MODEL = "openai-codex/gpt-5.4"
+CARRYOVER_ACTIONABLE = "Actionable"
+CARRYOVER_NOT_ACTIONABLE = "Not Actionable"
+CARRYOVER_RESOLVED = "Resolved"
+CARRYOVER_OPTIONS = {CARRYOVER_ACTIONABLE, CARRYOVER_NOT_ACTIONABLE, CARRYOVER_RESOLVED}
 COMMON_OLLAMA_PATHS = [
     Path(r"C:\Users\Amit\AppData\Local\Programs\Ollama\ollama.exe"),
     Path(r"C:\Program Files\Ollama\ollama.exe"),
@@ -104,6 +110,8 @@ class Debrief:
     open_items: str
     next_steps: str
     content: str
+    carryover: str = ""
+    carryover_topic: str = ""
     source: str = "fixture"
 
 
@@ -135,6 +143,8 @@ def load_runtime_config() -> dict[str, Any]:
         "notion": {
             "data_source_id": DEFAULT_NOTION_DATA_SOURCE_ID,
             "status_property": DEFAULT_NOTION_STATUS_PROPERTY,
+            "carryover_property": DEFAULT_NOTION_CARRYOVER_PROPERTY,
+            "carryover_topic_property": DEFAULT_NOTION_CARRYOVER_TOPIC_PROPERTY,
         },
         "brainstorm": {
             "data_source_id": DEFAULT_BRAINSTORM_DATA_SOURCE_ID,
@@ -524,11 +534,40 @@ def first_property_value(properties: dict[str, Any], names: list[str]) -> str:
 
 
 def infer_section(content: str, names: list[str]) -> str:
+    stop_headings = {
+        "what was done",
+        "summary",
+        "session summary",
+        "open",
+        "open items",
+        "what's open",
+        "whats open",
+        "next",
+        "next steps",
+        "what's next",
+        "whats next",
+    }
     for name in names:
         pattern = re.compile(rf"^{re.escape(name)}\s*:?\s*(.+)$", re.IGNORECASE | re.MULTILINE)
         match = pattern.search(content)
         if match:
             return match.group(1).strip()
+    lines = content.splitlines()
+    wanted = {name.strip().lower().rstrip(":") for name in names}
+    for index, line in enumerate(lines):
+        normalized = re.sub(r"^[#*\-\s]+", "", line).strip().lower().rstrip(":")
+        if normalized not in wanted:
+            continue
+        section_lines: list[str] = []
+        for next_line in lines[index + 1 :]:
+            clean = next_line.strip()
+            if not clean or clean == "---":
+                continue
+            next_heading = re.sub(r"^[#*\-\s]+", "", clean).strip().lower().rstrip(":")
+            if clean.startswith("#") and next_heading in stop_headings:
+                break
+            section_lines.append(clean)
+        return "\n".join(section_lines).strip()
     return ""
 
 
@@ -539,6 +578,9 @@ def notion_page_to_debrief(page: dict[str, Any], *, status_property: str) -> Deb
     content = notion_page_content(str(page.get("id", "")))
     status = first_property_value(properties, [status_property]) or "New"
     project_name = first_property_value(properties, ["Project"])
+    carryover_property, carryover_topic_property = notion_carryover_property_names()
+    carryover = first_property_value(properties, [carryover_property])
+    carryover_topic = first_property_value(properties, [carryover_topic_property])
     return Debrief(
         id=str(page.get("id", "")).strip(),
         title=title,
@@ -546,10 +588,12 @@ def notion_page_to_debrief(page: dict[str, Any], *, status_property: str) -> Deb
         project_name=project_name,
         repo_url=repo_from_text(content),
         local_repo_path=first_property_value(properties, ["Local Repo", "Local Repo Path", "Repo Path"]),
-        session_summary=infer_section(content, ["Session summary", "Summary"]) or title,
-        open_items=infer_section(content, ["Open items", "Open Items", "Open"]),
-        next_steps=infer_section(content, ["Next steps", "Next Steps", "Next"]),
+        session_summary=infer_section(content, ["Session summary", "Summary", "What Was Done"]) or title,
+        open_items=infer_section(content, ["Open items", "Open Items", "Open", "What's Open", "Whats Open"]),
+        next_steps=infer_section(content, ["Next steps", "Next Steps", "Next", "What's Next", "Whats Next"]),
         content=content or title,
+        carryover=carryover,
+        carryover_topic=carryover_topic,
         source="notion",
     )
 
@@ -579,6 +623,126 @@ def notion_property_kind(data_source_id: str, property_name: str) -> str:
 def notion_data_source_schema(data_source_id: str) -> dict[str, Any]:
     data = notion_api_request("GET", f"/data_sources/{data_source_id}")
     return data.get("properties", {})
+
+
+def notion_carryover_property_names() -> tuple[str, str]:
+    config = load_runtime_config()
+    notion_config = config["notion"]
+    return (
+        str(notion_config.get("carryover_property") or DEFAULT_NOTION_CARRYOVER_PROPERTY),
+        str(notion_config.get("carryover_topic_property") or DEFAULT_NOTION_CARRYOVER_TOPIC_PROPERTY),
+    )
+
+
+def carryover_schema_errors(schema: dict[str, Any]) -> list[str]:
+    carryover_property, carryover_topic_property = notion_carryover_property_names()
+    errors: list[str] = []
+    carryover_schema = schema.get(carryover_property)
+    topic_schema = schema.get(carryover_topic_property)
+    if not carryover_schema:
+        errors.append(f"Missing Notion property {carryover_property!r}.")
+    elif carryover_schema.get("type") != "select":
+        errors.append(f"Notion property {carryover_property!r} must be a select property.")
+    else:
+        options = {
+            str(option.get("name", "")).strip()
+            for option in carryover_schema.get("select", {}).get("options", [])
+        }
+        missing = sorted(CARRYOVER_OPTIONS - options)
+        if missing:
+            errors.append(f"Notion property {carryover_property!r} is missing options: {', '.join(missing)}.")
+    if not topic_schema:
+        errors.append(f"Missing Notion property {carryover_topic_property!r}.")
+    elif topic_schema.get("type") != "rich_text":
+        errors.append(f"Notion property {carryover_topic_property!r} must be a rich_text property.")
+    return errors
+
+
+def require_carryover_schema(data_source_id: str) -> dict[str, Any]:
+    schema = notion_data_source_schema(data_source_id)
+    errors = carryover_schema_errors(schema)
+    if errors:
+        raise RuntimeError(
+            "Session Debriefs carryover schema is not ready. "
+            + " ".join(errors)
+            + " Run --ensure-carryover-schema before live Friday cron processing."
+        )
+    return schema
+
+
+def carryover_schema_status() -> dict[str, Any]:
+    config = load_runtime_config()
+    data_source_id = str(config["notion"].get("data_source_id") or DEFAULT_NOTION_DATA_SOURCE_ID)
+    schema = notion_data_source_schema(data_source_id)
+    errors = carryover_schema_errors(schema)
+    return {"ready": not errors, "errors": errors}
+
+
+def ensure_carryover_schema() -> dict[str, Any]:
+    config = load_runtime_config()
+    data_source_id = str(config["notion"].get("data_source_id") or DEFAULT_NOTION_DATA_SOURCE_ID)
+    carryover_property, carryover_topic_property = notion_carryover_property_names()
+    schema = notion_data_source_schema(data_source_id)
+    properties: dict[str, Any] = {}
+    carryover_schema = schema.get(carryover_property)
+    if not carryover_schema or carryover_schema.get("type") == "select":
+        existing_options = {
+            str(option.get("name", "")).strip()
+            for option in (carryover_schema or {}).get("select", {}).get("options", [])
+        }
+        if not carryover_schema or CARRYOVER_OPTIONS - existing_options:
+            properties[carryover_property] = {
+                "select": {
+                    "options": [
+                        {"name": CARRYOVER_ACTIONABLE, "color": "green"},
+                        {"name": CARRYOVER_NOT_ACTIONABLE, "color": "gray"},
+                        {"name": CARRYOVER_RESOLVED, "color": "blue"},
+                    ]
+                }
+            }
+    if carryover_topic_property not in schema:
+        properties[carryover_topic_property] = {"rich_text": {}}
+    if properties:
+        schema = notion_api_request("PATCH", f"/data_sources/{data_source_id}", {"properties": properties}).get(
+            "properties", {}
+        )
+    errors = carryover_schema_errors(schema)
+    return {
+        "data_source_id": data_source_id,
+        "changed": bool(properties),
+        "properties_added": list(properties),
+        "ready": not errors,
+        "errors": errors,
+    }
+
+
+def notion_update_page_properties(page_id: str, values: dict[str, Any]) -> dict[str, Any]:
+    config = load_runtime_config()
+    data_source_id = str(config["notion"].get("data_source_id") or DEFAULT_NOTION_DATA_SOURCE_ID)
+    schema = require_carryover_schema(data_source_id)
+    lower_schema = {name.lower(): name for name in schema}
+    properties: dict[str, Any] = {}
+    for wanted_name, value in values.items():
+        actual = lower_schema.get(wanted_name.lower())
+        if not actual:
+            raise RuntimeError(f"Notion property {wanted_name!r} does not exist.")
+        property_value = notion_property_value(schema[actual], value)
+        if property_value is not None:
+            properties[actual] = property_value
+    if not properties:
+        return {"skipped": True, "reason": "No non-empty property values to update."}
+    return notion_api_request("PATCH", f"/pages/{page_id}", {"properties": properties})
+
+
+def notion_update_carryover(page_id: str, carryover: str, topic: str) -> dict[str, Any]:
+    carryover_property, carryover_topic_property = notion_carryover_property_names()
+    return notion_update_page_properties(
+        page_id,
+        {
+            carryover_property: carryover,
+            carryover_topic_property: topic,
+        },
+    )
 
 
 def notion_update_status(page_id: str, status: str) -> dict[str, Any]:
@@ -730,6 +894,130 @@ def normalize_status(status: str | None) -> str:
     return (status or "").strip().lower()
 
 
+def meaningful_text(value: str) -> bool:
+    text = clean_model_text(value)
+    if not text:
+        return False
+    lowered = text.lower()
+    empty_markers = {
+        "none",
+        "no open items",
+        "no open item",
+        "nothing open",
+        "nothing to do",
+        "n/a",
+        "not applicable",
+        "complete",
+        "completed",
+    }
+    return lowered not in empty_markers
+
+
+def debrief_has_actionable_carryover(debrief: Debrief) -> bool:
+    if meaningful_text(debrief.open_items) or meaningful_text(debrief.next_steps):
+        return True
+    lowered = f"{debrief.session_summary}\n{debrief.content}".lower()
+    action_patterns = [
+        "what's next",
+        "whats next",
+        "next:",
+        "next steps",
+        "still need",
+        "needs ",
+        "todo",
+        "to do",
+        "open item",
+        "follow up",
+        "follow-up",
+        "continue ",
+        "unresolved",
+    ]
+    return any(pattern in lowered for pattern in action_patterns)
+
+
+def normalize_carryover(value: Any, *, debrief: Debrief, result: str) -> str:
+    text = str(value or "").strip()
+    if text.lower().replace("-", " ") in {"actionable", "open"}:
+        return CARRYOVER_ACTIONABLE
+    if text.lower().replace("-", " ") in {"not actionable", "not relevant", "none", "closed"}:
+        if debrief_has_actionable_carryover(debrief):
+            return CARRYOVER_ACTIONABLE
+        return CARRYOVER_NOT_ACTIONABLE
+    if text.lower() == "resolved":
+        return CARRYOVER_RESOLVED
+    if result == "useful_review" or debrief_has_actionable_carryover(debrief):
+        return CARRYOVER_ACTIONABLE
+    return CARRYOVER_NOT_ACTIONABLE
+
+
+def topic_is_specific(topic: str, project_name: str = "") -> bool:
+    text = clean_model_text(topic)
+    if not text or ":" not in text:
+        return False
+    generic = {"cron job", "cron", "brainstorm", "telegram", "notion", "friday", "project intelligence"}
+    lowered = text.lower().strip()
+    if lowered in generic or lowered == project_name.lower().strip():
+        return False
+    words = re.findall(r"[A-Za-z0-9]+", text)
+    return len(words) >= 5
+
+
+def concise_phrase(value: str, max_words: int = 5) -> str:
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]*", clean_model_text(value))
+    return " ".join(words[:max_words]) if words else "follow-up work"
+
+
+def infer_carryover_topic(debrief: Debrief, route: dict[str, Any], proposed_topic: str = "") -> str:
+    project = route.get("project_name") or debrief.project_name or "Friday"
+    if topic_is_specific(proposed_topic, project):
+        return clean_model_text(proposed_topic)
+
+    text = f"{debrief.title}\n{debrief.session_summary}\n{debrief.open_items}\n{debrief.next_steps}\n{debrief.content}".lower()
+    if "voicepal" in text or "brainstorm" in text:
+        module = "Voicepal brainstorm intake"
+        if "digest" in text and ("quality" in text or "extraction" in text):
+            capability = "digest quality extraction"
+        elif "transcript" in text or "filing" in text or "telegram" in text:
+            capability = "Telegram transcript filing"
+        else:
+            capability = concise_phrase(debrief.next_steps or debrief.open_items or debrief.session_summary)
+    elif "cron" in text or "auto-run" in text or "watcher" in text or "project intelligence" in text:
+        module = "project-intelligence cron"
+        if "telegram" in text and ("context" in text or "suggestion" in text or "comment" in text):
+            capability = "useful-review Telegram context"
+        elif "useful-review" in text and ("live" in text or "trigger" in text or "verify" in text):
+            capability = "useful-review live path verification"
+        elif "nameerror" in text or "config" in text:
+            capability = "auto-run NameError recovery"
+        else:
+            capability = concise_phrase(debrief.next_steps or debrief.open_items or debrief.session_summary)
+    else:
+        module = concise_phrase(debrief.session_summary or debrief.title, max_words=4)
+        capability = concise_phrase(debrief.next_steps or debrief.open_items or debrief.session_summary)
+
+    return f"{project} {module}: {capability}"
+
+
+def carryover_metadata(
+    debrief: Debrief,
+    route: dict[str, Any],
+    executive_result: dict[str, Any],
+) -> dict[str, str]:
+    result = str(executive_result.get("result") or "").strip()
+    carryover = normalize_carryover(executive_result.get("carryover"), debrief=debrief, result=result)
+    topic = infer_carryover_topic(debrief, route, str(executive_result.get("carryover_topic") or ""))
+    reason = clean_model_text(executive_result.get("carryover_reason")) or (
+        "Debrief has open items or next steps."
+        if debrief_has_actionable_carryover(debrief)
+        else "No clear next-session carryover found."
+    )
+    return {
+        "carryover": carryover,
+        "carryover_topic": topic,
+        "carryover_reason": reason,
+    }
+
+
 def parse_debrief(raw: dict[str, Any]) -> Debrief:
     return Debrief(
         id=str(raw.get("id", "")).strip(),
@@ -742,6 +1030,8 @@ def parse_debrief(raw: dict[str, Any]) -> Debrief:
         open_items=str(raw.get("open_items", "")).strip(),
         next_steps=str(raw.get("next_steps", "")).strip(),
         content=str(raw.get("content", "")).strip(),
+        carryover=str(raw.get("carryover", "")).strip(),
+        carryover_topic=str(raw.get("carryover_topic", "")).strip(),
     )
 
 
@@ -1656,6 +1946,11 @@ Before suggesting anything, verify from repo context whether it already exists o
 For useful reviews, write the full suggestion only in notion_comment.
 The Telegram message must be only a short notification: project name, session title/date if available, and that a suggestion was left in Notion.
 Do not include the actual suggestion or detailed reasoning in Telegram.
+Separately decide carryover for future start-session resume targeting.
+No useful extra suggestion does not mean not actionable; if the debrief itself has open items, next steps, unfinished work, or a clear feature thread to resume, carryover must be Actionable.
+Carryover Topic must be specific enough to distinguish related future work. Use "{{project/module}}: {{specific capability or problem}}".
+Bad topics: "cron job", "brainstorm", "Telegram", "Notion", "Friday".
+Good topics: "Friday project-intelligence cron: useful-review Telegram context", "Friday Voicepal brainstorm intake: Telegram transcript filing".
 
 Return a single JSON object:
 {{
@@ -1663,7 +1958,10 @@ Return a single JSON object:
   "notion_status": "Reviewed" | "No Useful Suggestions" | "Review Failed",
   "notion_comment": "full comment to write in Notion",
   "telegram_message": "short pointer only, or empty string",
-  "reason": "short reason"
+  "reason": "short reason",
+  "carryover": "Actionable" | "Not Actionable",
+  "carryover_topic": "specific feature-thread label",
+  "carryover_reason": "short reason for carryover decision"
 }}
 
 Project: {route.get("project_name", "")}
@@ -1702,12 +2000,16 @@ def draft_telegram_missing_mapping(debrief: Debrief, route: dict[str, Any]) -> s
 
 def draft_telegram_review_notice(debrief: Debrief, route: dict[str, Any]) -> str:
     project = route.get("project_name") or debrief.project_name or "Unknown project"
-    session = debrief.title or debrief.session_summary or debrief.id
+    title = debrief.title or debrief.session_summary or debrief.id
+    content = debrief.content.strip()
+    context = debrief.session_summary or (content.splitlines()[0] if content else title)
+    if len(context) > 240:
+        context = context[:237].rstrip() + "..."
     return (
-        "Friday left a project suggestion in Notion.\n\n"
+        f"Friday commented on debrief: {title}\n\n"
         f"Project: {project}\n"
-        f"Session: {session}\n\n"
-        "I kept the full suggestion in the Notion comment so you can review it when you have time."
+        f"Context: {context}\n\n"
+        "Full suggestion is in the Notion comment."
     )
 
 
@@ -1925,6 +2227,17 @@ def process_debriefs(
         worker_prompt = draft_worker_prompt(debrief, route, repo_context)
         prompt = draft_executive_review_prompt(debrief, route, repo_context)
         item["repo_context"] = repo_context
+        if debrief.source == "notion":
+            schema_status = carryover_schema_status()
+            item["carryover_schema"] = schema_status
+            if not schema_status["ready"]:
+                item["planned_actions"].append(
+                    {
+                        "type": "carryover_schema_error",
+                        "errors": schema_status["errors"],
+                        "fix": "Run --ensure-carryover-schema before live Friday cron processing.",
+                    }
+                )
         item["planned_actions"].append(
             {
                 "type": "worker_prompt",
@@ -2022,6 +2335,17 @@ def build_page_preview(
     executive_prompt = draft_executive_review_prompt(debrief, route, repo_context)
     preview["model_tier_used"] = "executive"
     preview["gpt54_would_be_called"] = True
+    if debrief.source == "notion":
+        schema_status = carryover_schema_status()
+        preview["carryover_schema"] = schema_status
+        if not schema_status["ready"]:
+            preview["planned_actions"].append(
+                {
+                    "type": "carryover_schema_error",
+                    "errors": schema_status["errors"],
+                    "fix": "Run --ensure-carryover-schema before live Friday cron processing.",
+                }
+            )
     preview["worker_prompt"] = worker_prompt
     preview["executive_prompt"] = executive_prompt
     preview["planned_actions"].extend(
@@ -2067,6 +2391,10 @@ def apply_page(
             telegram = ""
         elif not next_status:
             next_status = "Reviewed"
+        carryover = carryover_metadata(debrief, preview.get("route", {}), executive_result)
+        config = load_runtime_config()
+        require_carryover_schema(str(config["notion"].get("data_source_id") or DEFAULT_NOTION_DATA_SOURCE_ID))
+        preview["carryover"] = carryover
         preview["executive_result"] = executive_result
 
     if not next_status:
@@ -2082,13 +2410,23 @@ def apply_page(
 
     status_result = notion_update_status(page_id, next_status)
     comment_result = notion_add_comment(page_id, comment)
+    carryover_result = None
+    if preview.get("carryover"):
+        carryover_result = notion_update_carryover(
+            page_id,
+            str(preview["carryover"]["carryover"]),
+            str(preview["carryover"]["carryover_topic"]),
+        )
     telegram_result = send_openclaw_telegram(telegram, telegram_target) if telegram else None
     return {
         "applied": True,
         "page_id": page_id,
         "status": next_status,
+        "carryover": preview.get("carryover", {}).get("carryover", ""),
+        "carryover_topic": preview.get("carryover", {}).get("carryover_topic", ""),
         "notion_status_result_id": status_result.get("id"),
         "notion_comment_result_id": comment_result.get("id"),
+        "notion_carryover_result_id": carryover_result.get("id") if carryover_result else None,
         "telegram_sent": bool(telegram_result),
         "telegram_result": telegram_result,
         "preview": preview,
@@ -2110,6 +2448,7 @@ def auto_run(*, use_local_router: bool, limit: int = 10, ollama_model: str | Non
     processed_ids = state_id_set(state.get("processedDebriefs", []))
     unresolved_ids = state_id_set(state.get("unresolvedMappings", []))
     project_map = load_project_map()
+    config = load_runtime_config()
     debriefs = load_notion_debriefs(limit=limit)
     results: list[dict[str, Any]] = []
 
@@ -2187,7 +2526,16 @@ def auto_run(*, use_local_router: bool, limit: int = 10, ollama_model: str | Non
             telegram_sent = bool(applied.get("telegram_sent"))
             outcome = "reviewed" if status_after == "Reviewed" else normalize_status(status_after).replace(" ", "_")
             mark_processed(state, debrief, outcome=outcome or "applied", status=status_after, telegram_sent=telegram_sent)
-            item["actions"].append({"type": "apply_page", "applied": applied.get("applied"), "status": status_after, "telegram_sent": telegram_sent})
+            item["actions"].append(
+                {
+                    "type": "apply_page",
+                    "applied": applied.get("applied"),
+                    "status": status_after,
+                    "carryover": applied.get("carryover"),
+                    "carryover_topic": applied.get("carryover_topic"),
+                    "telegram_sent": telegram_sent,
+                }
+            )
         except Exception as exc:  # noqa: BLE001 - auto-run reports and continues.
             item["error"] = str(exc)
             try:
@@ -2218,6 +2566,34 @@ def run_fixture_tests(use_local_router: bool = False, ollama_model: str | None =
         ollama_model=ollama_model,
     )
     by_id = {item["id"]: item for item in result["results"]}
+    fixture_debriefs = {debrief.id: debrief for debrief in debriefs}
+    review_notice = draft_telegram_review_notice(
+        fixture_debriefs["fixture-clear-repo"],
+        by_id["fixture-clear-repo"]["route"],
+    )
+    useful_carryover = carryover_metadata(
+        fixture_debriefs["fixture-clear-repo"],
+        by_id["fixture-clear-repo"]["route"],
+        {
+            "result": "useful_review",
+            "carryover_topic": "cron job",
+            "carryover_reason": "Model gave a generic topic.",
+        },
+    )
+    no_suggestion_open_carryover = carryover_metadata(
+        fixture_debriefs["fixture-clear-repo"],
+        by_id["fixture-clear-repo"]["route"],
+        {"result": "no_useful_suggestions", "carryover": "Not Actionable", "carryover_topic": "brainstorm"},
+    )
+    no_suggestion_closed_carryover = carryover_metadata(
+        fixture_debriefs["fixture-reviewed"],
+        by_id["fixture-reviewed"]["route"],
+        {
+            "result": "no_useful_suggestions",
+            "carryover": "Not Actionable",
+            "carryover_topic": "Sleep.io cleanup: already reviewed session",
+        },
+    )
 
     assertions = [
         ("clear repo should route to review", by_id["fixture-clear-repo"]["route"]["should_launch_review"] is True),
@@ -2242,6 +2618,24 @@ def run_fixture_tests(use_local_router: bool = False, ollama_model: str | None =
         (
             "clear repo includes optional worker tier",
             any(action["type"] == "worker_prompt" and action.get("optional") for action in by_id["fixture-clear-repo"]["planned_actions"]),
+        ),
+        ("review notice names exact debrief", "Friday commented on debrief: Sleep.io session" in review_notice),
+        ("review notice includes project", "Project: Sleep.io" in review_notice),
+        ("review notice includes context", "Context: Fixed auth redirects and left payment settings unresolved." in review_notice),
+        ("review notice points to Notion", "Full suggestion is in the Notion comment." in review_notice),
+        ("review notice does not include full review body", "Why I'm messaging:" not in review_notice),
+        ("useful review sets actionable carryover", useful_carryover["carryover"] == CARRYOVER_ACTIONABLE),
+        (
+            "no useful suggestion with open work stays actionable",
+            no_suggestion_open_carryover["carryover"] == CARRYOVER_ACTIONABLE,
+        ),
+        (
+            "no useful suggestion with no open work is not actionable",
+            no_suggestion_closed_carryover["carryover"] == CARRYOVER_NOT_ACTIONABLE,
+        ),
+        (
+            "generic carryover topic is rewritten",
+            useful_carryover["carryover_topic"] != "cron job" and topic_is_specific(useful_carryover["carryover_topic"]),
         ),
     ]
 
@@ -2322,6 +2716,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--ollama-model", help="Override the local Ollama router tag (for example falcon3:3b)")
     parser.add_argument("--discover-notion", action="store_true", help="Read-only discovery for the session debriefs Notion source")
     parser.add_argument("--discover-brainstorm-notion", action="store_true", help="Read-only discovery for the Brainstorm Digests Notion source")
+    parser.add_argument("--ensure-carryover-schema", action="store_true", help="Create/update Session Debriefs carryover properties")
     parser.add_argument("--create-brainstorm-database", help="Create Brainstorm Digests under this Notion parent page id")
     parser.add_argument("--notion-dry-run", action="store_true", help="Preview planned actions for recent Notion debriefs")
     parser.add_argument("--notion-limit", type=int, default=5, help="Recent Notion debrief rows to fetch during discovery")
@@ -2361,6 +2756,11 @@ def main(argv: list[str]) -> int:
 
     if args.discover_brainstorm_notion:
         result = discover_notion_brainstorm_digests(limit=args.notion_limit)
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if args.ensure_carryover_schema:
+        result = ensure_carryover_schema()
         print(json.dumps(result, indent=2))
         return 0
 
